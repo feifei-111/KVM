@@ -1,4 +1,4 @@
-# KVM
+# KVM: Kernel Virtual Machine
 
 KVM is a research and implementation repo for a fine-grained kernel virtual
 machine: a runtime where work is submitted as explicit tasks or IR to a
