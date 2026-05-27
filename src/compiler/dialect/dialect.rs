@@ -1,5 +1,4 @@
-use crate::compiler::dialect::Operator;
-use crate::compiler::ir::{Attribute, Type};
+use crate::compiler::ir::{Attribute, Operator, Type};
 
 pub trait Dialect {
     fn name(&self) -> &str;

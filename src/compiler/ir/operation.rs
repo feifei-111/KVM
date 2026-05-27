@@ -1,5 +1,5 @@
+use super::OperatorIndex;
 use super::{AttributeMap, ValueIndex};
-use crate::compiler::dialect::OperatorIndex;
 use crate::compiler::store::Storable;
 
 pub type OperationIndex = super::Index<super::OperationKind>;

@@ -1,5 +1,4 @@
-use crate::compiler::dialect::Operator;
-use crate::compiler::ir::Type;
+use crate::compiler::ir::{Operator, Type};
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct DialectKey {

@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::compiler::dialect::{Dialect, DialectKey, Operator, OperatorIndex};
+use crate::compiler::dialect::{Dialect, DialectKey};
 use crate::compiler::ir::{
     Attribute, AttributeIndex, AttributeMap, BuiltinAttribute, BuiltinType, Operation,
-    OperationIndex, Type, TypeIndex, Value, ValueIndex,
+    OperationIndex, Operator, OperatorIndex, Type, TypeIndex, Value, ValueIndex,
 };
 use crate::compiler::store::Store;
 
