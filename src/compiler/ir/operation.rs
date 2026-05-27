@@ -1,21 +1,12 @@
 use super::{AttributeMap, ValueIndex};
+use crate::compiler::dialect::OperatorIndex;
 use crate::compiler::store::Storable;
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct OpName {
-    pub dialect: String,
-    pub name: String,
-}
-
-impl OpName {
-    pub fn new(dialect: impl Into<String>, name: impl Into<String>) -> Self {
-        return Self { dialect: dialect.into(), name: name.into() };
-    }
-}
+pub type OperationIndex = super::Index<super::OperationKind>;
 
 #[derive(Debug)]
 pub struct Operation {
-    pub name: OpName,
+    pub operator: OperatorIndex,
     pub operands: Vec<ValueIndex>,
     pub results: Vec<ValueIndex>,
     pub attrs: AttributeMap,
@@ -23,16 +14,14 @@ pub struct Operation {
 
 impl Operation {
     pub fn new(
-        name: OpName,
+        operator: OperatorIndex,
         operands: Vec<ValueIndex>,
         results: Vec<ValueIndex>,
         attrs: AttributeMap,
     ) -> Self {
-        return Self { name, operands, results, attrs };
+        return Self { operator, operands, results, attrs };
     }
 }
-
-pub type OperationIndex = super::Index<super::OperationKind>;
 
 impl Storable for Operation {
     type Kind = super::OperationKind;

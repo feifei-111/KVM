@@ -1,18 +1,73 @@
 use std::any::Any;
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct TypeName {
-    pub dialect: String,
-    pub name: String,
+use crate::compiler::store::Storable;
+
+pub type TypeIndex = super::Index<super::TypeKind>;
+
+pub trait Type: std::fmt::Debug {
+    fn dialect(&self) -> &str;
+
+    fn kind(&self) -> &str;
+
+    fn identity(&self) -> String {
+        return format!("{}::{}", self.dialect(), self.kind());
+    }
+
+    fn as_any(&self) -> &dyn Any;
 }
 
-impl TypeName {
-    pub fn new(dialect: impl Into<String>, name: impl Into<String>) -> Self {
-        return Self { dialect: dialect.into(), name: name.into() };
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BuiltinType {
+    Unit,
+    Index,
+    Integer { bits: u16, signed: bool },
+    Float { bits: u16 },
+}
+
+impl Type for BuiltinType {
+    fn dialect(&self) -> &str {
+        return "builtin";
+    }
+
+    fn kind(&self) -> &str {
+        match self {
+            BuiltinType::Unit => {
+                return "unit";
+            }
+            BuiltinType::Index => {
+                return "index";
+            }
+            BuiltinType::Integer { .. } => {
+                return "integer";
+            }
+            BuiltinType::Float { .. } => {
+                return "float";
+            }
+        }
+    }
+
+    fn identity(&self) -> String {
+        match self {
+            BuiltinType::Unit => {
+                return "builtin::unit".to_string();
+            }
+            BuiltinType::Index => {
+                return "builtin::index".to_string();
+            }
+            BuiltinType::Integer { bits, signed } => {
+                return format!("builtin::integer<{bits},{signed}>");
+            }
+            BuiltinType::Float { bits } => {
+                return format!("builtin::float<{bits}>");
+            }
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        return self;
     }
 }
 
-pub trait Type: std::fmt::Debug {
-    fn name(&self) -> TypeName;
-    fn as_any(&self) -> &dyn Any;
+impl Storable for Box<dyn Type> {
+    type Kind = super::TypeKind;
 }

@@ -1,48 +1,130 @@
-use crate::compiler::dialect::{Dialect, DialectRegistry, OperatorObj};
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::compiler::dialect::{Dialect, DialectKey, Operator, OperatorIndex};
 use crate::compiler::ir::{
-    AttrName, Attribute, OpName, Operation, OperationIndex, Type, TypeName, Value,
-    ValueIndex,
+    Attribute, AttributeIndex, AttributeMap, BuiltinAttribute, BuiltinType, Operation,
+    OperationIndex, Type, TypeIndex, Value, ValueIndex,
 };
 use crate::compiler::store::Store;
 
 pub type ContextResult<T> = Result<T, ContextError>;
 
-#[derive(Default)]
 pub struct Context {
     values: Store<Value>,
     operations: Store<Operation>,
-    dialects: DialectRegistry,
+    types: Store<Box<dyn Type>>,
+    attributes: Store<Box<dyn Attribute>>,
+    operators: Store<Box<dyn Operator>>,
+    dialects: BTreeSet<String>,
+    type_lookup: BTreeMap<String, TypeIndex>,
+    attribute_lookup: BTreeMap<String, AttributeIndex>,
+    operator_lookup: BTreeMap<DialectKey, OperatorIndex>,
 }
 
 impl Context {
     pub fn new() -> Self {
-        return Self::default();
+        let mut context = Self::empty();
+        context.register_builtin();
+        return context;
+    }
+
+    fn empty() -> Self {
+        return Self {
+            values: Store::new(),
+            operations: Store::new(),
+            types: Store::new(),
+            attributes: Store::new(),
+            operators: Store::new(),
+            dialects: BTreeSet::new(),
+            type_lookup: BTreeMap::new(),
+            attribute_lookup: BTreeMap::new(),
+            operator_lookup: BTreeMap::new(),
+        };
+    }
+
+    fn register_builtin(&mut self) {
+        self.add_type(Box::new(BuiltinType::Unit)).unwrap();
+        self.add_type(Box::new(BuiltinType::Index)).unwrap();
+        self.add_attribute(Box::new(BuiltinAttribute::Bool(false))).unwrap();
+        self.add_attribute(Box::new(BuiltinAttribute::Int(0))).unwrap();
+        self.add_attribute(Box::new(BuiltinAttribute::Float(0.0))).unwrap();
+        self.add_attribute(Box::new(BuiltinAttribute::String(String::new()))).unwrap();
     }
 
     pub fn register_dialect(&mut self, dialect: Box<dyn Dialect>) -> ContextResult<()> {
-        return self.dialects.register(dialect).map_err(ContextError::Dialect);
+        let dialect_name = dialect.name().to_string();
+        if self.dialects.contains(&dialect_name) {
+            return Err(ContextError::DialectAlreadyRegistered(dialect_name));
+        }
+
+        for ty in dialect.types() {
+            if ty.dialect() != dialect_name {
+                return Err(ContextError::ComponentDialectMismatch {
+                    expected: dialect_name,
+                    actual: ty.dialect().to_string(),
+                });
+            }
+            self.add_type(ty)?;
+        }
+
+        for attribute in dialect.attributes() {
+            if attribute.dialect() != dialect_name {
+                return Err(ContextError::ComponentDialectMismatch {
+                    expected: dialect_name,
+                    actual: attribute.dialect().to_string(),
+                });
+            }
+            self.add_attribute(attribute)?;
+        }
+
+        for operator in dialect.operators() {
+            if operator.dialect() != dialect_name {
+                return Err(ContextError::ComponentDialectMismatch {
+                    expected: dialect_name,
+                    actual: operator.dialect().to_string(),
+                });
+            }
+            self.add_operator(operator)?;
+        }
+
+        self.dialects.insert(dialect_name);
+        return Ok(());
     }
 
-    pub fn dialect(&self, name: &str) -> Option<&dyn Dialect> {
-        return self.dialects.get(name);
+    pub fn type_index(&self, identity: &str) -> Option<TypeIndex> {
+        return self.type_lookup.get(identity).copied();
     }
 
-    pub fn operator(&self, name: &OpName) -> Option<&dyn OperatorObj> {
-        return self.dialects.operator(name);
+    pub fn type_object(&self, index: TypeIndex) -> Option<&dyn Type> {
+        return self.types.get(index).map(Box::as_ref);
     }
 
-    pub fn ty(&self, name: &TypeName) -> Option<&dyn Type> {
-        return self.dialects.ty(name);
+    pub fn attribute_index(&self, identity: &str) -> Option<AttributeIndex> {
+        return self.attribute_lookup.get(identity).copied();
     }
 
-    pub fn attribute(&self, name: &AttrName) -> Option<&dyn Attribute> {
-        return self.dialects.attribute(name);
+    pub fn attribute(&self, index: AttributeIndex) -> Option<&dyn Attribute> {
+        return self.attributes.get(index).map(Box::as_ref);
+    }
+
+    pub fn intern_attribute(
+        &mut self,
+        attribute: Box<dyn Attribute>,
+    ) -> ContextResult<AttributeIndex> {
+        return self.add_attribute(attribute);
+    }
+
+    pub fn operator_index(&self, dialect: &str, kind: &str) -> Option<OperatorIndex> {
+        return self.operator_lookup.get(&DialectKey::new(dialect, kind)).copied();
+    }
+
+    pub fn operator(&self, index: OperatorIndex) -> Option<&dyn Operator> {
+        return self.operators.get(index).map(Box::as_ref);
     }
 
     pub fn add_value(&mut self, value: Value) -> ContextResult<ValueIndex> {
-        if self.dialects.ty(&value.ty).is_none() {
-            return Err(ContextError::UnknownTypeName(value.ty));
-        }
+        self.require_type(value.ty)?;
+        self.require_attributes(&value.attrs)?;
         return Ok(self.values.insert(value));
     }
 
@@ -54,19 +136,39 @@ impl Context {
         return self.values.get_mut(index);
     }
 
+    pub fn build_operation(
+        &mut self,
+        operator: OperatorIndex,
+        operands: Vec<ValueIndex>,
+        result_types: Vec<TypeIndex>,
+        attrs: AttributeMap,
+    ) -> ContextResult<OperationIndex> {
+        self.require_operator(operator)?;
+
+        let result_types = self
+            .operator(operator)
+            .unwrap()
+            .infer_results(self, &operands, result_types)
+            .map_err(ContextError::Verifier)?;
+
+        let mut results = Vec::with_capacity(result_types.len());
+        for (index, ty) in result_types.into_iter().enumerate() {
+            let name = format!("result{}", index);
+            results.push(self.add_value(Value::new(name, ty, AttributeMap::new()))?);
+        }
+
+        let operation = Operation::new(operator, operands, results, attrs);
+        let index = self.add_operation(operation)?;
+        self.verify_operation(index)?;
+        return Ok(index);
+    }
+
     pub fn add_operation(
         &mut self,
         operation: Operation,
     ) -> ContextResult<OperationIndex> {
-        if self.dialects.operator(&operation.name).is_none() {
-            return Err(ContextError::UnknownOperationName(operation.name));
-        }
-
-        for (_, attr) in &operation.attrs {
-            if self.dialects.attribute(&attr.name()).is_none() {
-                return Err(ContextError::UnknownAttributeName(attr.name()));
-            }
-        }
+        self.require_operator(operation.operator)?;
+        self.require_attributes(&operation.attrs)?;
 
         for operand in &operation.operands {
             if !self.values.contains(*operand) {
@@ -77,7 +179,6 @@ impl Context {
         for result in &operation.results {
             let value =
                 self.values.get(*result).ok_or(ContextError::UnknownValue(*result))?;
-
             if let Some(existing) = value.def {
                 return Err(ContextError::ValueAlreadyDefined {
                     value: *result,
@@ -103,10 +204,6 @@ impl Context {
 
     pub fn operation(&self, index: OperationIndex) -> Option<&Operation> {
         return self.operations.get(index);
-    }
-
-    pub fn operation_mut(&mut self, index: OperationIndex) -> Option<&mut Operation> {
-        return self.operations.get_mut(index);
     }
 
     pub fn remove_operation(
@@ -155,23 +252,97 @@ impl Context {
     pub fn verify_operation(&self, index: OperationIndex) -> ContextResult<()> {
         let operation =
             self.operations.get(index).ok_or(ContextError::UnknownOperation(index))?;
-        let operator = self.dialects.operator(&operation.name).ok_or_else(|| {
-            ContextError::UnknownOperationName(operation.name.clone())
-        })?;
+        let operator = self
+            .operators
+            .get(operation.operator)
+            .ok_or(ContextError::UnknownOperator(operation.operator))?;
 
-        return operator.verify(self, index).map_err(ContextError::Dialect);
+        return operator.verify(self, index).map_err(ContextError::Verifier);
+    }
+
+    fn add_type(&mut self, ty: Box<dyn Type>) -> ContextResult<TypeIndex> {
+        let identity = ty.identity();
+        if self.type_lookup.contains_key(&identity) {
+            return Err(ContextError::DuplicateType(identity));
+        }
+
+        let index = self.types.insert(ty);
+        self.type_lookup.insert(identity, index);
+        return Ok(index);
+    }
+
+    fn add_attribute(
+        &mut self,
+        attribute: Box<dyn Attribute>,
+    ) -> ContextResult<AttributeIndex> {
+        let identity = attribute.identity();
+        if self.attribute_lookup.contains_key(&identity) {
+            return Err(ContextError::DuplicateAttribute(identity));
+        }
+
+        let index = self.attributes.insert(attribute);
+        self.attribute_lookup.insert(identity, index);
+        return Ok(index);
+    }
+
+    fn add_operator(
+        &mut self,
+        operator: Box<dyn Operator>,
+    ) -> ContextResult<OperatorIndex> {
+        let key = DialectKey::from(operator.as_ref());
+        if self.operator_lookup.contains_key(&key) {
+            return Err(ContextError::DuplicateOperator(key));
+        }
+
+        let index = self.operators.insert(operator);
+        self.operator_lookup.insert(key, index);
+        return Ok(index);
+    }
+
+    fn require_type(&self, index: TypeIndex) -> ContextResult<()> {
+        if !self.types.contains(index) {
+            return Err(ContextError::UnknownType(index));
+        }
+        return Ok(());
+    }
+
+    fn require_operator(&self, index: OperatorIndex) -> ContextResult<()> {
+        if !self.operators.contains(index) {
+            return Err(ContextError::UnknownOperator(index));
+        }
+        return Ok(());
+    }
+
+    fn require_attributes(&self, attrs: &AttributeMap) -> ContextResult<()> {
+        for attribute in attrs.values() {
+            if !self.attributes.contains(*attribute) {
+                return Err(ContextError::UnknownAttribute(*attribute));
+            }
+        }
+        return Ok(());
+    }
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        return Self::new();
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ContextError {
-    Dialect(String),
-    UnknownAttributeName(AttrName),
-    UnknownTypeName(TypeName),
-    UnknownOperationName(OpName),
+    ComponentDialectMismatch { expected: String, actual: String },
+    DialectAlreadyRegistered(String),
+    DuplicateAttribute(String),
+    DuplicateOperator(DialectKey),
+    DuplicateType(String),
+    UnknownAttribute(AttributeIndex),
+    UnknownOperator(OperatorIndex),
+    UnknownType(TypeIndex),
     UnknownValue(ValueIndex),
     UnknownOperation(OperationIndex),
     ValueAlreadyDefined { value: ValueIndex, existing: OperationIndex },
     ValueStillDefined { value: ValueIndex, def: OperationIndex },
     ValueStillUsed { value: ValueIndex, users: Vec<OperationIndex> },
+    Verifier(String),
 }

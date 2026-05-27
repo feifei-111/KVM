@@ -6,7 +6,7 @@ pub trait Storable {
     type Kind: IndexKind;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Store<Component: Storable> {
     next_index: usize,
     values: BTreeMap<Index<Component::Kind>, Component>,
