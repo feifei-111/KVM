@@ -1,4 +1,2 @@
-pub mod context;
-pub mod dialect;
+pub mod dialects;
 pub mod ir;
-pub mod store;

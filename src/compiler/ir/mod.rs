@@ -1,19 +1,15 @@
-pub mod attribute;
-pub mod index;
-pub mod operation;
-pub mod operator;
-pub mod value;
+mod attr;
+mod entity;
+mod error;
+mod graph;
+mod text;
+mod ty;
 
-#[path = "type.rs"]
-pub mod ty;
+pub use attr::{Attr, AttrMap};
+pub use entity::{Operation, Type, Value};
+pub use error::IrError;
+pub use graph::{Graph, OperationView, RenderFormat, RenderOptions, ValueView};
+pub use ty::TypeExpr;
 
-pub use attribute::{Attribute, AttributeIndex, AttributeMap, BuiltinAttribute};
-pub use index::{
-    AttributeKind, Index, IndexKind, OperationKind, OperatorKind, TypeKind, ValueKind,
-};
-pub use operation::{Operation, OperationIndex};
-pub use operator::{
-    Operator, OperatorIndex, first_operand_type, require_same_operand_and_result_types,
-};
-pub use ty::{BuiltinType, Type, TypeIndex};
-pub use value::{Value, ValueIndex};
+#[cfg(test)]
+mod tests;
