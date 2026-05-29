@@ -9,16 +9,16 @@ use super::{Attr, IrError};
 pub struct TypeExpr {
     dialect: String,
     kind: String,
-    params: BTreeMap<String, Attr>,
+    fields: BTreeMap<String, Attr>,
 }
 
 impl TypeExpr {
     pub fn new(dialect: impl Into<String>, kind: impl Into<String>) -> Self {
-        Self { dialect: dialect.into(), kind: kind.into(), params: BTreeMap::new() }
+        Self { dialect: dialect.into(), kind: kind.into(), fields: BTreeMap::new() }
     }
 
-    pub fn with_param(mut self, key: impl Into<String>, value: Attr) -> Self {
-        self.params.insert(key.into(), value);
+    pub fn with_field(mut self, key: impl Into<String>, value: Attr) -> Self {
+        self.fields.insert(key.into(), value);
         self
     }
 
@@ -30,13 +30,13 @@ impl TypeExpr {
         &self.kind
     }
 
-    pub fn params(&self) -> &BTreeMap<String, Attr> {
-        &self.params
+    pub fn fields(&self) -> &BTreeMap<String, Attr> {
+        &self.fields
     }
 
     pub fn parse(input: &str) -> Result<Self, IrError> {
         let input = input.trim();
-        let (head, params) = if let Some(open) = input.find('<') {
+        let (head, fields) = if let Some(open) = input.find('<') {
             let close = input.rfind('>').ok_or_else(|| {
                 IrError::Parse(format!("missing '>' in type: {input}"))
             })?;
@@ -57,16 +57,16 @@ impl TypeExpr {
         }
 
         let mut ty = Self::new(dialect, kind);
-        if let Some(params) = params {
-            for item in split_top_level(params, ',') {
+        if let Some(fields) = fields {
+            for item in split_top_level(fields, ',') {
                 let item = item.trim();
                 if item.is_empty() {
                     continue;
                 }
                 let (key, value) = item.split_once('=').ok_or_else(|| {
-                    IrError::Parse(format!("type param must be key=value: {item}"))
+                    IrError::Parse(format!("type field must be key=value: {item}"))
                 })?;
-                ty.params.insert(key.trim().to_string(), Attr::parse(value.trim())?);
+                ty.fields.insert(key.trim().to_string(), Attr::parse(value.trim())?);
             }
         }
         Ok(ty)
@@ -76,9 +76,9 @@ impl TypeExpr {
 impl fmt::Display for TypeExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}", self.dialect, self.kind)?;
-        if !self.params.is_empty() {
+        if !self.fields.is_empty() {
             write!(f, "<")?;
-            for (i, (key, value)) in self.params.iter().enumerate() {
+            for (i, (key, value)) in self.fields.iter().enumerate() {
                 if i > 0 {
                     write!(f, ", ")?;
                 }

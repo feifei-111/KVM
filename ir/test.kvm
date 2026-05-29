@@ -1,0 +1,43 @@
+graph.dist.config = {"backend":"nccl","ranks":[{"rank":0,"host":"node0","process":0,"device":"cuda:0"},{"rank":1,"host":"node0","process":1,"device":"cuda:1"},{"rank":2,"host":"node1","process":0,"device":"cuda:0"},{"rank":3,"host":"node1","process":1,"device":"cuda:1"}]}
+
+func @main(
+  %tokens: hlo.tensor<dtype=f16, shape=[8,4096]>,
+  %router_w: hlo.tensor<dtype=f16, shape=[4096,4]>,
+  %expert0_w1: hlo.tensor<dtype=f16, shape=[4096,14336]>,
+  %expert0_w2: hlo.tensor<dtype=f16, shape=[14336,4096]>,
+  %expert1_w1: hlo.tensor<dtype=f16, shape=[4096,14336]>,
+  %expert1_w2: hlo.tensor<dtype=f16, shape=[14336,4096]>,
+  %attn_q_w: hlo.tensor<dtype=f16, shape=[4096,4096]>,
+  %attn_k_w: hlo.tensor<dtype=f16, shape=[4096,4096]>,
+  %attn_v_w: hlo.tensor<dtype=f16, shape=[4096,4096]>,
+  %attn_mask: hlo.tensor<dtype=f16, shape=[8,8]>,
+  %kv_cache: hlo.kvcache<dtype=f16, block_shape=paged_vllm>,
+  %attn_meta: hlo.attn_meta {"tokens":{"seq_offsets":[0,4,8]},"positions":{"start_positions":[12,28]},"kvcache":{"block_size":16,"block_indices":[[3],[7,8]],"seq_lengths":[16,32]},"attn_mask":"masked"}
+) -> (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.kvcache<dtype=f16, block_shape=paged_vllm>) {
+  %router_logits = "hlo.matmul"(%tokens, %router_w) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[4096,4]>) -> hlo.tensor<dtype=f16, shape=[8,4]>
+  %router_probs = "hlo.arith.exp"(%router_logits) : (hlo.tensor<dtype=f16, shape=[8,4]>) -> hlo.tensor<dtype=f16, shape=[8,4]>
+
+  %attn_q = "hlo.matmul"(%tokens, %attn_q_w) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[4096,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  %attn_k = "hlo.matmul"(%tokens, %attn_k_w) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[4096,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  %attn_v = "hlo.matmul"(%tokens, %attn_v_w) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[4096,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  %attn_q_rope = "hlo.attn.rope"(%attn_q, %attn_meta) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.attn_meta) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  %attn_k_rope = "hlo.attn.rope"(%attn_k, %attn_meta) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.attn_meta) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  %cached_k, %cached_v = "hlo.kvcache.read"(%kv_cache, %attn_meta) : (hlo.kvcache<dtype=f16, block_shape=paged_vllm>, hlo.attn_meta) -> (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[8,4096]>)
+  %updated_cache = "hlo.kvcache.write"(%kv_cache, %attn_meta, %attn_k_rope, %attn_v) : (hlo.kvcache<dtype=f16, block_shape=paged_vllm>, hlo.attn_meta, hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[8,4096]>) -> hlo.kvcache<dtype=f16, block_shape=paged_vllm>
+  %attn_k_all = "hlo.arith.add"(%attn_k_rope, %cached_k) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[8,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  %attn_v_all = "hlo.arith.add"(%attn_v, %cached_v) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[8,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  %attn_out = "hlo.attn.prefill"(%attn_q_rope, %attn_k_all, %attn_v_all, %attn_mask, %attn_meta) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[8,8]>, hlo.attn_meta) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+
+  %dispatched = "hlo.comm.dispatch"(%tokens, %router_probs) {"dist":{"ranks":[0,1,2,3]}} : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[8,4]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  %expert0_hidden = "hlo.matmul"(%dispatched, %expert0_w1) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[4096,14336]>) -> hlo.tensor<dtype=f16, shape=[8,14336]>
+  %expert1_hidden = "hlo.matmul"(%dispatched, %expert1_w1) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[4096,14336]>) -> hlo.tensor<dtype=f16, shape=[8,14336]>
+  %expert0_act = "hlo.arith.max"(%expert0_hidden, %expert0_hidden) : (hlo.tensor<dtype=f16, shape=[8,14336]>, hlo.tensor<dtype=f16, shape=[8,14336]>) -> hlo.tensor<dtype=f16, shape=[8,14336]>
+  %expert1_act = "hlo.arith.max"(%expert1_hidden, %expert1_hidden) : (hlo.tensor<dtype=f16, shape=[8,14336]>, hlo.tensor<dtype=f16, shape=[8,14336]>) -> hlo.tensor<dtype=f16, shape=[8,14336]>
+  %expert0_out = "hlo.matmul"(%expert0_act, %expert0_w2) : (hlo.tensor<dtype=f16, shape=[8,14336]>, hlo.tensor<dtype=f16, shape=[14336,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  %expert1_out = "hlo.matmul"(%expert1_act, %expert1_w2) : (hlo.tensor<dtype=f16, shape=[8,14336]>, hlo.tensor<dtype=f16, shape=[14336,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  %expert_sum = "hlo.arith.add"(%expert0_out, %expert1_out) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[8,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  %combined = "hlo.comm.combine"(%expert_sum, %router_probs) {"dist":{"ranks":[0,1,2,3]}} : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[8,4]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+
+  %model_out = "hlo.arith.add"(%combined, %attn_out) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[8,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  return %model_out, %updated_cache : hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.kvcache<dtype=f16, block_shape=paged_vllm>
+}

@@ -1,7 +1,7 @@
 # Dialect Design
 
-> TL;DR: Dialects are users of the core IR syntax. A dialect owns the typed
-> value, operation, and type APIs that give generic IR nodes their semantics.
+> TL;DR: Dialects are users of the core IR syntax. `hlo` owns high-level
+> operation semantics; `llo` is reserved for lowered operation semantics.
 
 ## Boundary
 
@@ -19,83 +19,62 @@
 
 `src/compiler/dialects` defines semantics over that syntax.
 
-A dialect should not introduce a second graph representation. It should wrap or
-construct core IR `Value`, `Operation`, and `Type` entities with dialect-specific
+A dialect should not introduce a second graph representation. It should
+construct or wrap core IR values, operations, and types with dialect-specific
 APIs.
 
-## Dialect-Owned Concepts
+## Interface Rule
 
-Each dialect owns three semantic layers.
+The public dialect interface describes:
 
-### Type APIs
+- graph-level semantic properties owned by the IR graph
+- value type names and required value type fields
+- operation names
+- required operation attrs
+- operation input value types
+- operation output value types
 
-Types define the must-have semantic contract.
+It does not expose a separate parameter layer for operations. If a semantic
+variant changes the operation definition, use a distinct operation name. If
+structured data defines a value, put it in the value type. If structured data
+configures a particular operation instance, put it in operation attrs and let
+the dialect verifier require it. If it is runtime data flowing through the
+graph, make it an input value.
 
 Examples:
 
 ```text
-kernel.tensor<dtype=f16, layout=row_major, shape=[128,128]>
-kernel.matmul<accum=f32>
-executor.load_gmem<bytes=128, cache=ca>
+hlo.arith.cmp.lt: tensor, tensor -> tensor<bool>
+hlo.arith.cast.f16: tensor -> tensor
+hlo.comm.all_reduce.sum { dist: DistDesc }: tensor -> tensor
+hlo.kvcache.write: kvcache, attn_meta, tensor, tensor -> kvcache
 ```
-
-The dialect owns:
-
-- structured constructors for these types
-- typed accessors such as dtype, shape, layout, accum dtype
-- verification rules for values and operations using those types
-- result type inference where useful
-
-### Value APIs
-
-Values are still core IR values, but a dialect may expose typed value wrappers.
-
-Example shape:
-
-```text
-KernelTensor(Value)
-ExecutorFragment(Value)
-ExecutorToken(Value)
-```
-
-These wrappers should not own storage. They are typed views over core IR values.
-Their job is to make dialect APIs harder to misuse.
-
-### Operation APIs
-
-Operations are still core IR operations, but a dialect may expose typed
-operation wrappers or builders.
-
-Example shape:
-
-```text
-KernelMatmul(Operation)
-ExecutorLoadGmem(Operation)
-ExecutorBarrier(Operation)
-```
-
-Operation type is the operator. The dialect operation API should construct the
-right operation type and result value types, then insert a core IR operation.
 
 ## Current Dialects
 
-### kernel
+### hlo
 
-`kernel` is the public high-level dialect. It describes the computation/IO
-semantics that users want KVM to compile.
+`hlo` is the high-level operations dialect. It describes user-visible compute,
+communication, and KV cache semantics that KVM should compile.
 
 Current implemented surface:
 
 - `TensorType`
 - `MatmulType`
-- `KernelBuilder`
+- `GemmType`
+- attention operations
+- arith operations
+- communication operations
+- KV cache value type and read/write operations
+- `HloBuilder`
+- `hlo::description`
 
-See [kernel/DESIGN.md](kernel/DESIGN.md).
+See [hlo/DESIGN.md](hlo/DESIGN.md).
 
-### executor
+### llo
 
-`executor` is reserved for lowered operations consumed by the KVM
-executor/codegen path.
+`llo` is reserved for lower-level operations consumed by the KVM executor or
+codegen path.
 
 It is intentionally a placeholder for now.
 
