@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fmt::Write as _;
 
 use super::IrError;
 use super::text::split_top_level;
@@ -25,6 +26,9 @@ impl Attr {
             return Err(IrError::Parse("empty attr".to_string()));
         }
         if input == "unit" {
+            return Ok(Self::Unit);
+        }
+        if input == "null" {
             return Ok(Self::Unit);
         }
         if input == "true" {
@@ -78,24 +82,21 @@ impl fmt::Display for Attr {
                 }
                 write!(f, "]")
             }
-            Self::Dict(values) => write_attr_map(f, values),
+            Self::Dict(values) => write!(f, "{}", format_attr_map(values)),
         }
     }
 }
 
-pub(crate) fn format_attr_map(values: &AttrMap) -> String {
-    format!("{}", Attr::Dict(values.clone()))
+pub fn format_attr_map(values: &AttrMap) -> String {
+    let mut out = String::new();
+    write_attr_map_json(values, &mut out);
+    out
 }
 
-fn write_attr_map(f: &mut fmt::Formatter<'_>, values: &AttrMap) -> fmt::Result {
-    write!(f, "{{ ")?;
-    for (i, (key, value)) in values.iter().enumerate() {
-        if i > 0 {
-            write!(f, ", ")?;
-        }
-        write!(f, "{key} = {value}")?;
-    }
-    write!(f, " }}")
+pub fn format_attr_map_pretty(values: &AttrMap) -> String {
+    let mut out = String::new();
+    write_attr_map_json_pretty(values, 0, &mut out);
+    out
 }
 
 fn parse_list(input: &str) -> Result<Attr, IrError> {
@@ -122,10 +123,8 @@ fn parse_dict(input: &str) -> Result<Attr, IrError> {
         if item.is_empty() {
             continue;
         }
-        let (key, value) = item.split_once('=').ok_or_else(|| {
-            IrError::Parse(format!("dict item must be key=value: {item}"))
-        })?;
-        values.insert(key.trim().to_string(), Attr::parse(value.trim())?);
+        let (key, value) = split_key_value(item)?;
+        values.insert(parse_key(key.trim())?, Attr::parse(value.trim())?);
     }
     Ok(Attr::Dict(values))
 }
@@ -134,9 +133,197 @@ fn parse_string(input: &str) -> Result<String, IrError> {
     if !input.ends_with('"') || input.len() < 2 {
         return Err(IrError::Parse(format!("string missing quote: {input}")));
     }
-    Ok(input[1..input.len() - 1].replace("\\\"", "\""))
+    let mut out = String::new();
+    let mut chars = input[1..input.len() - 1].chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        let escaped = chars
+            .next()
+            .ok_or_else(|| IrError::Parse(format!("invalid string escape: {input}")))?;
+        match escaped {
+            '"' => out.push('"'),
+            '\\' => out.push('\\'),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            other => {
+                out.push('\\');
+                out.push(other);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn looks_like_float(input: &str) -> bool {
     input.contains('.') && input.parse::<f64>().is_ok()
+}
+
+fn split_key_value(input: &str) -> Result<(&str, &str), IrError> {
+    let mut square = 0usize;
+    let mut brace = 0usize;
+    let mut paren = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, ch) in input.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '[' => square += 1,
+            ']' => square = square.saturating_sub(1),
+            '{' => brace += 1,
+            '}' => brace = brace.saturating_sub(1),
+            '(' => paren += 1,
+            ')' => paren = paren.saturating_sub(1),
+            ':' | '=' if square == 0 && brace == 0 && paren == 0 => {
+                return Ok((&input[..index], &input[index + ch.len_utf8()..]));
+            }
+            _ => {}
+        }
+    }
+    Err(IrError::Parse(format!("dict item must be key:value: {input}")))
+}
+
+fn parse_key(input: &str) -> Result<String, IrError> {
+    if input.starts_with('"') {
+        parse_string(input)
+    } else if input.is_empty() {
+        Err(IrError::Parse("empty dict key".to_string()))
+    } else {
+        Ok(input.to_string())
+    }
+}
+
+fn write_attr_json(value: &Attr, out: &mut String) {
+    match value {
+        Attr::Unit => out.push_str("null"),
+        Attr::Bool(value) => {
+            let _ = write!(out, "{value}");
+        }
+        Attr::Int(value) => {
+            let _ = write!(out, "{value}");
+        }
+        Attr::Float(value) => out.push_str(value),
+        Attr::String(value) | Attr::Symbol(value) => write_json_string(value, out),
+        Attr::List(values) => {
+            out.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_attr_json(value, out);
+            }
+            out.push(']');
+        }
+        Attr::Dict(values) => write_attr_map_json(values, out),
+    }
+}
+
+fn write_attr_map_json(values: &AttrMap, out: &mut String) {
+    out.push('{');
+    for (index, (key, value)) in values.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_json_string(key, out);
+        out.push(':');
+        write_attr_json(value, out);
+    }
+    out.push('}');
+}
+
+fn write_attr_json_pretty(value: &Attr, indent: usize, out: &mut String) {
+    match value {
+        Attr::List(values) => write_attr_list_json_pretty(values, indent, out),
+        Attr::Dict(values) => write_attr_map_json_pretty(values, indent, out),
+        _ => write_attr_json(value, out),
+    }
+}
+
+fn write_attr_map_json_pretty(values: &AttrMap, indent: usize, out: &mut String) {
+    if values.is_empty() {
+        out.push_str("{}");
+        return;
+    }
+    out.push('{');
+    for (index, (key, value)) in values.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push('\n');
+        write_indent(indent + 2, out);
+        write_json_string(key, out);
+        out.push_str(": ");
+        write_attr_json_pretty(value, indent + 2, out);
+    }
+    out.push('\n');
+    write_indent(indent, out);
+    out.push('}');
+}
+
+fn write_attr_list_json_pretty(values: &[Attr], indent: usize, out: &mut String) {
+    if values.is_empty() {
+        out.push_str("[]");
+        return;
+    }
+    if values.iter().all(is_number_attr) {
+        out.push('[');
+        for (index, value) in values.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            write_attr_json(value, out);
+        }
+        out.push(']');
+        return;
+    }
+    out.push('[');
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push('\n');
+        write_indent(indent + 2, out);
+        write_attr_json_pretty(value, indent + 2, out);
+    }
+    out.push('\n');
+    write_indent(indent, out);
+    out.push(']');
+}
+
+fn is_number_attr(value: &Attr) -> bool {
+    matches!(value, Attr::Int(_) | Attr::Float(_))
+}
+
+fn write_indent(indent: usize, out: &mut String) {
+    for _ in 0..indent {
+        out.push(' ');
+    }
+}
+
+fn write_json_string(input: &str, out: &mut String) {
+    out.push('"');
+    for ch in input.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
 }

@@ -10,13 +10,17 @@ impl Graph {
     ) -> Result<String, IrError> {
         match format {
             RenderFormat::Text => self.render_text(options),
-            RenderFormat::Dot => self.render_dot(options),
         }
     }
 
     fn render_text(&self, options: RenderOptions) -> Result<String, IrError> {
         let names = self.value_names();
         let mut out = String::new();
+        if options.show_attrs && !self.properties.is_empty() {
+            out.push_str("graph");
+            out.push('\n');
+            out.push_str(&format!("  {}\n", format_attr_map(&self.properties)));
+        }
         for op in self.topological_operations()? {
             let data = &self.operations[op.index()];
             let op_name =
@@ -37,45 +41,5 @@ impl Graph {
             }
         }
         Ok(out.trim_end().to_string())
-    }
-
-    fn render_dot(&self, options: RenderOptions) -> Result<String, IrError> {
-        let names = self.value_names();
-        let mut out = String::from("digraph ir {\n");
-        for op in self.topological_operations()? {
-            let data = &self.operations[op.index()];
-            let op_label = if options.show_types {
-                self.type_expr(data.ty)?.to_string()
-            } else {
-                data.name.clone().unwrap_or_else(|| format!("operation{}", op.index()))
-            };
-            out.push_str(&format!("  op{} [label=\"{}\"];\n", op.index(), op_label));
-            for operand in &data.operands {
-                out.push_str(&format!(
-                    "  value{} [label=\"{}\", shape=box];\n",
-                    operand.index(),
-                    names[operand.index()]
-                ));
-                out.push_str(&format!(
-                    "  value{} -> op{};\n",
-                    operand.index(),
-                    op.index()
-                ));
-            }
-            for result in &data.results {
-                out.push_str(&format!(
-                    "  value{} [label=\"{}\", shape=box];\n",
-                    result.index(),
-                    names[result.index()]
-                ));
-                out.push_str(&format!(
-                    "  op{} -> value{};\n",
-                    op.index(),
-                    result.index()
-                ));
-            }
-        }
-        out.push('}');
-        Ok(out)
     }
 }

@@ -7,8 +7,8 @@ This document defines the public interface that users of the IR module should
 think in terms of. It intentionally avoids Rust-specific details such as
 generics, lifetimes, trait objects, ids, arenas, or indexes.
 
-`kernel`, `executor`, and future semantic families are dialects over this same
-IR syntax. They are not separate IR systems.
+Dialect families such as `hlo` are dialects over this same IR syntax. They are
+not separate IR systems.
 
 ## Core Terms
 
@@ -16,12 +16,16 @@ IR syntax. They are not separate IR systems.
 
 A graph is one IR unit. It contains values, operations, types, and attrs.
 
+A graph may also carry graph-level semantic properties. These properties are
+part of the graph, not part of any single operation. Dialects use them for
+whole-graph contracts such as distributed execution configuration.
+
 The graph owns the use-def relation:
 
 - an operation consumes values
 - an operation produces values
 - a value may have one producer operation
-- graph inputs and constants have no producer operation
+- block inputs and constants have no producer operation
 - a value may be used by many operations
 
 ### Value
@@ -31,7 +35,7 @@ A value is a typed object flowing through the graph.
 A value has:
 
 - a mandatory type
-- optional attrs
+- attrs
 - an optional producer operation
 - zero or more user operations
 - an optional printable name in text form
@@ -48,47 +52,73 @@ An operation has:
 - a mandatory type
 - operand values
 - result values
-- optional attrs
+- attrs
 - an optional printable name in text form
 
-The operation type is the operator. There is no separate operator object in the
-core IR interface.
+The operation has a mandatory semantic contract. There is no separate operator
+object in the core IR interface.
+
+### Block
+
+A block is the callable boundary of a graph. It gives the graph an explicit
+ordered interface, similar to a function signature:
+
+- ordered input values
+- ordered output values
+- a body made of values and operations
+- optional attrs
+- an optional printable name
+
+Block inputs are the values supplied by the caller of this graph. In a model
+execution graph, this usually includes request tensors and model weights,
+because both are external values needed to execute the graph. A value should
+only be a graph constant when the IR itself owns the literal value or the
+dialect defines a concrete constant-loading semantic.
+
+A graph may contain one entry block in the current interface. Future control
+flow may introduce multiple blocks or regions, but the first required contract
+is a single callable entry block.
 
 ### Type
 
 A type is the mandatory semantic contract of a value or operation. A node
 without a type is not a complete IR node.
 
-A type has:
+Value types and operation types deliberately have different weight.
+
+A value type has:
 
 - a dialect namespace
 - a kind inside that dialect
-- semantic parameters
+- required value fields, such as tensor dtype and shape
 - type-specific behavior exposed by the dialect
 
-Examples:
+An operation type has:
 
-```text
-kernel.tensor<dtype=f16, shape=[128,128], layout=row_major>
-kernel.matmul<accum=f32>
-executor.load_gmem<bytes=128, cache=ca>
-executor.barrier<scope=block>
-```
+- a dialect namespace
+- a kind inside that dialect
+- operation-specific hooks exposed by the dialect
 
-The first example can be used as a value type. The remaining examples can be
-used as operation types.
+Operation type should stay comparatively light. Per-operation instance settings
+such as distributed rank selection or precision policy should be represented as
+operation attrs unless they are important enough to split into a distinct
+operation kind.
 
 ### Attr
 
-An attr is optional metadata attached to a value or operation.
+An attr is structured data attached to a graph, block, value, or operation.
+In the text/debug surface, attr maps are printed as JSON objects. Type fields
+keep their type-printer syntax, for example `dtype=f16`.
 
-Attrs are the "maybe have" layer of the IR. A graph may use attrs for debug
-information, pass annotations, analysis output, or removable hints, but a legal
-node should not depend on an attr to answer what it is.
+Attrs have two roles:
 
-If removing a field makes a value or operation ill-defined, that field belongs
-in type. If removing it only loses extra information, that field belongs in
-attrs.
+- required instance properties declared and verified by a dialect
+- optional metadata such as debug names, analysis output, and pass-local hints
+
+For example, `hlo.tensor<dtype=f16, shape=[8,4096]>` is a value type, while
+`hlo.comm.dispatch` is an operation type and its `dist` description is a
+required operation attr interpreted against the graph-level `dist.config`
+property.
 
 ## Type Interface
 
@@ -100,11 +130,10 @@ Every type exposes these basic fields:
 ```text
 type.dialect -> DialectName
 type.kind    -> KindName
-type.params  -> structured parameters
+type.fields  -> structured fields
 ```
 
-`kind` means the category name inside a dialect, for example `tensor`, `matmul`,
-`load_gmem`, or `barrier`.
+`kind` means the category name inside a dialect, for example `tensor`.
 
 Dialect types may expose additional behavior:
 
@@ -129,18 +158,27 @@ new_graph() -> graph
 
 graph.define_type(type_expression) -> type
 
-graph.add_input(
-    type,
+graph.set_property(key, attr)
+graph.get_property(key) -> attr | none
+graph.remove_property(key) -> attr | none
+
+graph.new_block(
+    name,
+    inputs = [(name, type)...],
     attrs = {}
-) -> value
+) -> block
+
+block.input(index) -> value
+block.inputs() -> [value...]
 
 graph.add_constant(
+    name,
     type,
     attrs = {}
 ) -> value
 
 graph.add_operation(
-    type,
+    operation,
     operands = [value...],
     result_types = [type...],
     attrs = {}
@@ -157,19 +195,39 @@ graph.results(operation) -> [value...]
 This keeps the rule simple: operation results are values, and every result value
 knows its producer operation.
 
+`add_constant` is for values whose literal contents or loading semantics are
+owned by the IR/dialect. Model weights should be block inputs unless the
+dialect has defined a real embedded-constant representation.
+
+Blocks own the ordered callable boundary:
+
+```text
+block.set_outputs([value...])
+block.outputs() -> [value...]
+```
+
+The order of `block.inputs()` and `block.outputs()` is semantic. It defines the
+function-call ABI of the graph. Output types are the referenced value types.
+Printable value names do not define argument order.
+
 ## Graph Queries
 
 The graph query interface should provide these capabilities:
 
 ```text
 graph.type_of(value) -> type
-graph.type_of(operation) -> type
+graph.contract_of(operation) -> operation contract
+graph.entry_block() -> block
 
 graph.attrs(value) -> attrs
 graph.attrs(operation) -> attrs
+graph.attrs(block) -> attrs
 
 graph.producer(value) -> operation | none
 graph.users(value) -> [operation...]
+
+block.inputs() -> [value...]
+block.outputs() -> [value...]
 
 graph.operands(operation) -> [value...]
 graph.results(operation) -> [value...]
@@ -181,15 +239,15 @@ through the returned types.
 Example:
 
 ```text
-op_type = graph.type_of(operation)
+contract = graph.contract_of(operation)
 
-if op_type is kernel.matmul<...>:
-    op_type.infer_result_types(graph, operation)
+if contract is hlo.matmul:
+    contract.infer_result_types(graph, operation)
 ```
 
 The exact host-language mechanism for checking "is this a matmul type?" is an
 implementation detail. The public concept is that operation behavior is reached
-through operation type.
+through the operation's mandatory semantic contract.
 
 ## Attr Access
 
@@ -222,12 +280,21 @@ Attrs must round-trip through the text format, but they remain optional. Passes
 may add, remove, or rewrite attrs when doing so does not change the required
 semantic contract of the node.
 
+Some operation attrs are required by dialect semantics. Removing a required attr
+makes the node fail dialect verification, but it does not become part of the
+operation type.
+
 ## Verification
 
 Verification has two layers.
 
 Structural verification checks the generic graph syntax:
 
+- the graph has an entry block when it is used as a callable unit
+- every block input belongs to the graph
+- every block output belongs to the graph
+- every block output is either a block input, constant, or operation result
+- every declared block output type matches the referenced value type
 - every operand belongs to the graph
 - every result belongs to exactly one operation
 - every result points back to its producer
@@ -235,11 +302,11 @@ Structural verification checks the generic graph syntax:
 - topological traversal can detect cycles
 - attrs are representable in the text format
 
-Type verification delegates to dialect-owned type behavior:
+Dialect verification delegates to dialect-owned behavior:
 
 - value types verify values
-- operation types verify operations
-- operation types may check operands, attrs, and result types
+- operations verify operands, attrs, and result types using their operation
+  definition
 
 Public capability:
 
@@ -311,62 +378,49 @@ After a transform, the graph must still satisfy structural verification.
 
 ## Serialization
 
-The IR must round-trip through a text format:
+Serialization is a capability of the IR module, not the graph API itself.
+Callers should depend on parse/print behavior and semantic preservation, not on
+using text as the construction interface.
+
+Required capabilities:
 
 ```text
 parse_graph(text, type_registry) -> graph | error
 print_graph(graph) -> text | error
 ```
 
-The type registry belongs to dialect integration. It parses and prints type
-expressions such as:
+The concrete text grammar is documented separately from this API. The text
+format should follow MLIR-style conventions where possible instead of inventing
+new notation. Regardless of spelling, serialization must preserve:
 
-```text
-kernel.tensor<dtype=f16, shape=[128,128]>
-kernel.matmul<accum=f32>
-```
-
-The graph text format must preserve:
-
+- graph-level properties
+- block input order
+- block output order
 - value references
 - operation entries
 - operands
 - results
 - value types
-- operation types
+- operation semantic contracts
 - attrs
 
-One acceptable text shape is:
-
-```text
-lhs : kernel.tensor<dtype=f16, shape=[128,128]>
-rhs : kernel.tensor<dtype=f16, shape=[128,128]>
-
-out = kernel.matmul<accum=f32>(lhs, rhs)
-    -> kernel.tensor<dtype=f16, shape=[128,128]>
-    { debug.name = "qk_matmul" }
-```
-
-Here:
-
-- `lhs`, `rhs`, and `out` are printable value references
-- `kernel.matmul<accum=f32>` is the full operation type
-- `debug.name` is an attr, not the operation type
+Changing the serialization grammar should not change the graph construction,
+query, transform, verification, or dialect APIs. Text is an interchange and
+debugging surface.
 
 ## Visualization
 
-The IR must support graph visualization for debugging.
+Visualization is a debugging surface built on top of the IR graph. The core IR
+module should expose enough graph queries for renderers, while concrete visual
+targets live outside the IR module.
 
-Required capability:
+Current required render targets:
 
 ```text
-graph.render(format, options) -> text | error
+render.dot(graph, options) -> dot text | error
+render.png(graph, path, options) -> ok | error
+render.html(graph, path, options) -> ok | error
 ```
-
-Required formats:
-
-- `text`: simple terminal-readable graph drawing
-- `dot`: Graphviz DOT
 
 Useful options:
 
@@ -377,7 +431,9 @@ show_values: true | false
 show_operations: true | false
 ```
 
-Visualization has no semantic meaning. It is a view of the graph.
+Visualization has no semantic meaning. It is a view of the graph, and changing
+the renderer should not change graph construction, verification, traversal, or
+transforms.
 
 ## Error Categories
 
@@ -403,36 +459,51 @@ visualization.
 ```text
 graph = new_graph()
 
-tensor = graph.define_type(
-    kernel.tensor<dtype=f16, shape=[128,128], layout=row_major>
+graph.set_property(
+    "dist.config",
+    {
+        "backend": "nccl",
+        "ranks": [
+            { "rank": 0, "host": "node0", "process": 0, "device": "cuda:0" },
+            { "rank": 1, "host": "node0", "process": 1, "device": "cuda:1" }
+        ]
+    }
 )
 
-lhs = graph.add_input(tensor)
-rhs = graph.add_input(tensor)
+tensor = graph.define_type(
+    hlo.tensor<dtype=f16, shape=[128,128]>
+)
 
-matmul_type = graph.define_type(kernel.matmul<accum=f32>)
+main = graph.new_block(
+    "main",
+    inputs = [("tokens", tensor), ("weight", tensor)]
+)
 
 matmul = graph.add_operation(
-    type = matmul_type,
-    operands = [lhs, rhs],
+    operation = hlo.matmul,
+    operands = [main.input(0), main.input(1)],
     result_types = [tensor],
-    attrs = { debug.name = "qk" }
+    attrs = { "debug.name": "qk" }
 )
 
 out = graph.results(matmul)[0]
+main.set_outputs([out])
 
 graph.verify()
 graph.topological_operations()
 print_graph(graph)
-graph.render(dot, show_types = true)
+render.dot(graph, show_types = true)
 ```
 
 The important interface decisions are:
 
 - users manipulate `Value`, `Operation`, and `Type`
-- operation type is the operator
+- block input order defines graph call argument order
+- block output order defines graph call result order
 - type is the mandatory semantic contract
-- dialect semantics attach to types
-- attrs are optional metadata
+- value types may carry required value fields such as dtype and shape
+- operation types should stay light and select operation hooks
+- required operation attrs/properties hold per-operation instance data
+- optional attrs hold metadata
 - graph transforms are explicit structural edits
 - text and visualization are views over the same graph

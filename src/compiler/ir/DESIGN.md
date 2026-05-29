@@ -1,8 +1,7 @@
 # IR Design
 
-> TL;DR: IR is a syntax layer for a typed value/operation graph. `kernel`,
-> `executor`, and future semantic families are dialects expressed by types, not
-> separate IR systems.
+> TL;DR: IR is a syntax layer for a typed value/operation graph. `hlo`, `llo`,
+> and future semantic families are dialects over the same graph syntax.
 
 ## Goal
 
@@ -13,23 +12,25 @@ those types.
 
 An IR instance is a graph where values and operations are interleaved:
 
+- a graph may own graph-level semantic properties that apply to the whole graph
 - a value is data produced by an operation, an input placeholder, or a constant
 - an operation consumes values and produces values
 - dependencies are derived from operation operands and produced values
 - every value and operation has a mandatory type
-- every value and operation may also carry optional attrs
+- every value and operation may also carry attrs
 
 The IR syntax layer must support serialization, deserialization, visualization,
 topological traversal, and graph transformation.
 
 ## Dialect Boundary
 
-`kernel` and `executor` are not separate IR concepts. They are dialects over the
-same IR syntax.
+`hlo` and `llo` are not separate IR concepts. They are dialects over the same
+IR syntax.
 
 The syntax layer owns generic concepts:
 
 - graph
+- graph properties
 - value
 - operation
 - type
@@ -43,15 +44,15 @@ Dialects own semantic concepts:
 
 - tensor type
 - buffer type
-- matmul operation type
-- load operation type
-- barrier operation type
+- matmul operation
+- load operation
+- barrier operation
 - execution scope type
 - verifier behavior
 - type-specific builder helpers
 - type-specific rewrite helpers
 
-This keeps the IR module stable even when kernel/executor semantics change.
+This keeps the IR module stable even when dialect semantics change.
 
 ## Value And Operation
 
@@ -59,70 +60,78 @@ Value and operation are both typed graph nodes, but they play different syntax
 roles.
 
 A value represents an instance flowing through the graph. Its type describes the
-semantic category and key properties required to check and use that value.
+semantic category and required value fields. For HLO tensors, dtype and shape
+belong to the value type.
 
-An operation represents an action in the graph. Its type is the operator. There
-is no separate `Operator` concept in the core IR: if an operation is a matmul,
-its operation type is the matmul operator type.
+An operation represents an action in the graph. There is no separate
+`Operator` concept in the core IR: if an operation is a matmul, the operation
+is described by an operation name such as `hlo.matmul`. Required operation
+settings that do not change the operation family are operation attrs verified
+by the dialect.
 
-Operation type examples:
+Operation syntax examples:
 
 ```text
-kernel.matmul(lhs = tensor<f16, 128x128>, rhs = tensor<f16, 128x128>)
-executor.load_gmem(bytes = 128, cache = ca)
-executor.barrier(scope = block)
+hlo.matmul(lhs, rhs)
+llo.load_gmem.ca(src)
+llo.barrier.block()
 ```
 
 The exact spelling belongs to the text format and dialect type printers, but
-the semantic rule is fixed: operation type is operator identity plus
-operator-critical configuration.
+the semantic rule is fixed: semantic operation variants use distinct operation
+names; per-instance semantic data and optional metadata stay in attrs.
 
 ## Type Versus Attr
 
-Type is the "must have" part of a value or operation. It is the mandatory
-semantic contract that makes the node well defined.
+Value type and operation type are both mandatory, but they do not need the same
+shape.
 
-Attr is the "maybe have" part of a value or operation. It stores optional
-metadata that can be added, removed, or rewritten without changing what the node
-is.
+Value type may be rich. It is the contract for a value and can carry fields
+such as:
 
-Use type for fields that are required to define the node:
+- tensor dtype and shape
+- cache dtype
+- buffer memory space in lower-level dialects
 
-- tensor dtype, shape, layout
-- buffer memory space
+Operation type should stay comparatively light. It selects the operation family
+and dialect hook:
+
 - operation kind
-- operation parameters that change behavior
-- execution scope if it changes operation legality or meaning
-- verifier-relevant settings
+- operation variants that change behavior enough to deserve a distinct name
+- verifier/lowering hook selection
 
-Use attr for optional information:
+Operation attrs/properties carry per-operation instance data:
 
-- debug names
+- distributed participant description
+- precision or algorithm choices when they should not split the operation name
 - source locations
+- debug names
 - pass annotations
 - analysis results
-- scheduling hints that a pass may add or remove
-- flags that do not change the operation definition
+- scheduling hints
 
-If removing a field makes the value or operation ill-defined, it belongs in
-type. If removing it only loses metadata, analysis output, or pass-local
-information, it belongs in attr.
+If removing an operation attr makes an operation ill-defined, the node should
+fail dialect verification. That does not make the attr part of the operation
+type.
 
-Layout follows this rule too. If layout is part of the value contract and
-consumers require it to interpret the value correctly, it belongs in type. If it
-is only a lowering preference or temporary scheduling hint, it belongs in attr.
+Whole-graph contracts follow the same rule at graph scope. For example, a
+distributed execution configuration belongs to the graph because communication
+operations are interpreted against one global rank placement. The per-operation
+distributed participant description belongs to the communication operation attrs
+because it configures that operation instance.
 
 ## Type APIs
 
-Types are not just labels. A type may expose differentiated APIs through typed
-accessors.
+Types are not just labels. A type selects differentiated dialect APIs. Value
+details can be read from value type fields; operation instance settings can be
+read from operation attrs.
 
 Examples:
 
 ```text
 value.type().as_tensor().shape()
-operation.type().as_matmul().infer_result_type(...)
-operation.type().as_barrier().sync_scope()
+operation.type().is("hlo.matmul")
+operation.attrs()["dist"]
 ```
 
 The core IR does not need to know every dialect type. It only needs to provide
@@ -165,8 +174,9 @@ need to clone MLIR syntax, but it should keep the same useful properties:
 - every value has a printable name
 - every operation has a printable name
 - operation operands and results are explicit
-- types are explicit
-- attrs are explicit and round-trippable
+- value types are explicit
+- operation names are explicit
+- attrs are explicit, JSON-formatted, and round-trippable
 - dialect-specific type bodies are printable strings or structured records
 
 The text format is the interchange/debug format. The in-memory API is the source
@@ -176,8 +186,10 @@ of truth for compiler passes.
 
 Visualization is a debugging API, not a semantic dependency.
 
-The first required visualization target is a simple text graph. A Graphviz DOT
-export is also acceptable as a stable external format.
+The core IR can provide a simple terminal-readable text view, but concrete
+visual targets such as Graphviz DOT, PNG, and interactive HTML live in
+`src/render`. Renderers depend on IR graph queries; IR does not depend on a
+renderer.
 
 Visualization should show:
 
@@ -192,7 +204,7 @@ Visualization should show:
 
 The IR syntax layer should not:
 
-- decide whether a graph is kernel or executor dialect
+- decide whether a graph is `hlo` or `llo` dialect
 - encode KVM lowering policy
 - schedule execution
 - contain a separate operator registry in the core model

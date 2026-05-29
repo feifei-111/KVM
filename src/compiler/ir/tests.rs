@@ -1,16 +1,15 @@
 use super::*;
-use crate::compiler::dialects::kernel::{DType, KernelBuilder, Layout, TensorType};
+use crate::compiler::dialects::hlo::{DType, HloBuilder, TensorType};
+use crate::render::{GraphRenderOptions, render_dot};
 
 fn tensor_type() -> TypeExpr {
-    TypeExpr::new("kernel", "tensor")
-        .with_param("dtype", Attr::Symbol("f16".to_string()))
-        .with_param("shape", Attr::List(vec![Attr::Int(128), Attr::Int(128)]))
-        .with_param("layout", Attr::Symbol("row_major".to_string()))
+    TypeExpr::new("hlo", "tensor")
+        .with_field("dtype", Attr::Symbol("f16".to_string()))
+        .with_field("shape", Attr::List(vec![Attr::Int(128), Attr::Int(128)]))
 }
 
 fn matmul_type() -> TypeExpr {
-    TypeExpr::new("kernel", "matmul")
-        .with_param("accum", Attr::Symbol("f32".to_string()))
+    TypeExpr::new("hlo", "matmul")
 }
 
 fn debug_attrs(name: &str) -> AttrMap {
@@ -49,31 +48,27 @@ fn constructs_typed_value_operation_graph() {
 }
 
 #[test]
-fn kernel_builder_creates_public_high_level_dialect_ops() {
+fn hlo_builder_creates_public_high_level_dialect_ops() {
     let mut graph = Graph::new();
-    let mut kernel = KernelBuilder::new(&mut graph);
-    let tensor = kernel.tensor_type(TensorType::new(
-        DType::F16,
-        [128usize, 128usize],
-        Layout::RowMajor,
-    ));
-    let lhs = kernel.input("lhs", tensor).unwrap();
-    let rhs = kernel.input("rhs", tensor).unwrap();
-    let out = kernel.matmul(lhs, rhs, tensor, DType::F32).unwrap();
+    let mut hlo = HloBuilder::new(&mut graph);
+    let tensor = hlo.tensor_type(TensorType::new(DType::F16, [128usize, 128usize]));
+    let lhs = hlo.input("lhs", tensor).unwrap();
+    let rhs = hlo.input("rhs", tensor).unwrap();
+    let out = hlo.matmul(lhs, rhs, tensor).unwrap();
 
     assert_eq!(
         graph.type_expr(graph.type_of_value(out).unwrap()).unwrap().dialect(),
-        "kernel"
+        "hlo"
     );
     let producer = graph.producer(out).unwrap().unwrap();
     let op_ty = graph.type_expr(graph.type_of_operation(producer).unwrap()).unwrap();
-    assert_eq!(op_ty.dialect(), "kernel");
+    assert_eq!(op_ty.dialect(), "hlo");
     assert_eq!(op_ty.kind(), "matmul");
     assert_eq!(
         graph.to_text().unwrap(),
-        "lhs : kernel.tensor<dtype=f16, layout=row_major, shape=[128,128]>\n\
-rhs : kernel.tensor<dtype=f16, layout=row_major, shape=[128,128]>\n\n\
-v2 = kernel.matmul<accum=f32>(lhs, rhs)\n    -> kernel.tensor<dtype=f16, layout=row_major, shape=[128,128]>"
+        "%lhs : hlo.tensor<dtype=f16, shape=[128,128]>\n\
+%rhs : hlo.tensor<dtype=f16, shape=[128,128]>\n\n\
+%v2 = \"hlo.matmul\"(%lhs, %rhs) : (hlo.tensor<dtype=f16, shape=[128,128]>, hlo.tensor<dtype=f16, shape=[128,128]>) -> hlo.tensor<dtype=f16, shape=[128,128]>"
     );
     graph.verify().unwrap();
 }
@@ -127,30 +122,85 @@ fn replace_value_rewrites_users_without_touching_types() {
 #[test]
 fn text_round_trip_uses_clean_kvm_format() {
     let text = r#"
-lhs : kernel.tensor<dtype=f16, layout=row_major, shape=[128,128]>
-rhs : kernel.tensor<dtype=f16, layout=row_major, shape=[128,128]>
+graph.dist.config = {"backend":"nccl","ranks":[{"rank":0,"host":"node0","process":0,"device":"cuda:0"},{"rank":1,"host":"node0","process":1,"device":"cuda:1"}]}
 
-out = kernel.matmul<accum=f32>(lhs, rhs)
-    -> kernel.tensor<dtype=f16, layout=row_major, shape=[128,128]>
-    { debug.name = "qk_matmul" }
+%lhs : hlo.tensor<dtype=f16, shape=[128,128]>
+%rhs : hlo.tensor<dtype=f16, shape=[128,128]>
+
+%out = "hlo.matmul"(%lhs, %rhs) {"debug.name":"qk_matmul"} : (hlo.tensor<dtype=f16, shape=[128,128]>, hlo.tensor<dtype=f16, shape=[128,128]>) -> hlo.tensor<dtype=f16, shape=[128,128]>
 "#;
 
     let graph = Graph::parse_text(text).unwrap();
     graph.verify().unwrap();
     let printed = graph.to_text().unwrap();
 
-    assert!(
-        printed.contains(
-            "lhs : kernel.tensor<dtype=f16, layout=row_major, shape=[128,128]>"
-        )
-    );
-    assert!(printed.contains("out = kernel.matmul<accum=f32>(lhs, rhs)"));
-    assert!(printed.contains("{ debug.name = \"qk_matmul\" }"));
+    assert!(printed.contains("%lhs : hlo.tensor<dtype=f16, shape=[128,128]>"));
+    assert!(printed.contains("graph.dist.config = {\"backend\":\"nccl\""));
+    assert!(printed.contains("%out = \"hlo.matmul\"(%lhs, %rhs)"));
+    assert!(printed.contains("{\"debug.name\":\"qk_matmul\"}"));
     assert!(!printed.contains('!'));
-    assert!(!printed.contains('%'));
-    assert!(!printed.contains('@'));
     assert!(!printed.contains("attrs"));
 
+    let reparsed = Graph::parse_text(&printed).unwrap();
+    assert_eq!(reparsed.to_text().unwrap(), printed);
+}
+
+#[test]
+fn block_text_marks_call_inputs_and_typed_outputs() {
+    let text = r#"
+func @main(%tokens: hlo.tensor<dtype=f16, shape=[8,4096]>, %weight: hlo.tensor<dtype=f16, shape=[4096,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]> {
+  %out = "hlo.matmul"(%tokens, %weight) : (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.tensor<dtype=f16, shape=[4096,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]>
+  return %out : hlo.tensor<dtype=f16, shape=[8,4096]>
+}
+"#;
+
+    let graph = Graph::parse_text(text).unwrap();
+    graph.verify().unwrap();
+
+    let block = graph.entry_block().unwrap();
+    assert_eq!(graph.block(block).unwrap().name, "main");
+    assert_eq!(graph.block_inputs(block).unwrap().len(), 2);
+    assert_eq!(graph.block_outputs(block).unwrap().len(), 1);
+    assert_eq!(
+        graph.value(graph.block_input(block, 0).unwrap()).unwrap().name,
+        Some("tokens")
+    );
+
+    let printed = graph.to_text().unwrap();
+    assert!(printed.contains(
+        "func @main(%tokens: hlo.tensor<dtype=f16, shape=[8,4096]>, %weight: hlo.tensor<dtype=f16, shape=[4096,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]> {"
+    ));
+    assert!(printed.contains("return %out : hlo.tensor<dtype=f16, shape=[8,4096]>"));
+
+    let reparsed = Graph::parse_text(&printed).unwrap();
+    assert_eq!(reparsed.to_text().unwrap(), printed);
+}
+
+#[test]
+fn block_input_attrs_round_trip() {
+    let text = r#"
+func @main(%attn_meta: hlo.attn_meta {"positions":{"start_positions":[12,28]}}, %tokens: hlo.tensor<dtype=f16, shape=[8,4096]>) -> hlo.tensor<dtype=f16, shape=[8,4096]> {
+  return %tokens : hlo.tensor<dtype=f16, shape=[8,4096]>
+}
+"#;
+
+    let graph = Graph::parse_text(text).unwrap();
+    graph.verify().unwrap();
+
+    let block = graph.entry_block().unwrap();
+    let attn_meta = graph.block_input(block, 0).unwrap();
+    assert_eq!(
+        graph.get_value_attr(attn_meta, "positions").unwrap(),
+        Some(&Attr::Dict(AttrMap::from([(
+            "start_positions".to_string(),
+            Attr::List(vec![Attr::Int(12), Attr::Int(28)])
+        )])))
+    );
+
+    let printed = graph.to_text().unwrap();
+    assert!(printed.contains(
+        "%attn_meta: hlo.attn_meta {\"positions\":{\"start_positions\":[12,28]}}"
+    ));
     let reparsed = Graph::parse_text(&printed).unwrap();
     assert_eq!(reparsed.to_text().unwrap(), printed);
 }
@@ -168,7 +218,7 @@ fn render_text_and_dot_expose_graph_shape() {
             matmul_ty,
             [lhs, rhs],
             [tensor],
-            AttrMap::new(),
+            debug_attrs("qk"),
         )
         .unwrap();
     let out = graph.results(op).unwrap()[0];
@@ -180,18 +230,17 @@ fn render_text_and_dot_expose_graph_shape() {
             RenderOptions { show_types: true, show_attrs: false },
         )
         .unwrap();
-    assert!(text.contains("qk [kernel.matmul<accum=f32>]"));
+    assert!(text.contains("qk [hlo.matmul]"));
     assert!(text.contains("<- lhs"));
     assert!(text.contains("-> out"));
 
-    let dot = graph
-        .render(
-            RenderFormat::Dot,
-            RenderOptions { show_types: true, show_attrs: false },
-        )
-        .unwrap();
+    let dot =
+        render_dot(&graph, GraphRenderOptions { show_types: true, show_attrs: true })
+            .unwrap();
     assert!(dot.starts_with("digraph ir"));
-    assert!(dot.contains("kernel.matmul<accum=f32>"));
+    assert!(dot.contains("rankdir=TB"));
+    assert!(dot.contains("hlo.matmul"));
+    assert!(dot.contains("%lhs"));
     assert!(dot.contains("value"));
 }
 
