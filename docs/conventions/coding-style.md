@@ -29,6 +29,8 @@
 
 ## Formatting
 
-- Use pre-commit for basic file hygiene.
-- Rust formatting follows `rustfmt.toml`.
+- Use pre-commit for formatting and basic file hygiene. Install once with
+  `pre-commit install`; run on the whole tree with `pre-commit run --all-files`.
+- C++ formatting follows the Google style via `clang-format` (see
+  `.clang-format`); the pinned `clang-format` runs as a pre-commit hook.
 - Keep line endings as LF.
