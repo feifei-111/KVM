@@ -86,8 +86,11 @@ struct Operation {
 //     operation belongs to exactly one block (bound at creation).
 //   - inputs:  level inputs of this block; their GetDef == nullptr (Null).
 //   - outputs: values produced inside the block that it exposes.
+//   - name:    a label to tell block instances apart (like Value.name); given
+//     by the creator, or auto-filled (block0, block1, ...) when left empty.
 // Nodes are referred to by non-owning pointers into the Context arena.
 struct Block {
+  std::string name;
   std::vector<const Operation*> operations;
   std::vector<const Value*> inputs;
   std::vector<const Value*> outputs;

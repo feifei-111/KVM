@@ -17,9 +17,9 @@ const Value* Graph::MakeInput(std::string name, Type type,
       Value{std::move(name), std::move(type), std::move(impl)});
 }
 
-Block* Graph::MakeBlock(std::vector<const Value*> inputs) {
-  return arena_.AddBlock(
-      Block{/*operations=*/{}, std::move(inputs), /*outputs=*/{}});
+Block* Graph::MakeBlock(std::vector<const Value*> inputs, std::string name) {
+  return arena_.AddBlock(Block{std::move(name), /*operations=*/{},
+                               std::move(inputs), /*outputs=*/{}});
 }
 
 const Operation* Graph::MakeOperation(Block* block, Operator op,

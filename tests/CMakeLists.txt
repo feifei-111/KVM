@@ -9,6 +9,10 @@ target_link_libraries(test_graph PRIVATE kvm_ir)
 add_executable(test_attr test_attr.cpp)
 target_link_libraries(test_attr PRIVATE kvm_ir)
 
+add_executable(test_serialize test_serialize.cpp)
+target_link_libraries(test_serialize PRIVATE kvm_ir)
+
 add_test(NAME value COMMAND test_value)
 add_test(NAME graph COMMAND test_graph)
 add_test(NAME attr COMMAND test_attr)
+add_test(NAME serialize COMMAND test_serialize)

@@ -79,7 +79,12 @@ class Context {
   Context(const Context&) = delete;
   Context& operator=(const Context&) = delete;
 
+  // Add a node to the arena. If its `name` is empty, a default label is filled
+  // in (v0, v1, ... / block0, block1, ...). A creator that supplies a name
+  // (parse, a naming pass) keeps it; the auto-name only kicks in for hand-built
+  // graphs that omit names. Operations have no name.
   Value* AddValue(Value value) {
+    if (value.name.empty()) value.name = "v" + std::to_string(value_id_++);
     values_.push_back(std::move(value));
     return &values_.back();
   }
@@ -88,6 +93,7 @@ class Context {
     return &operations_.back();
   }
   Block* AddBlock(Block block) {
+    if (block.name.empty()) block.name = "block" + std::to_string(block_id_++);
     blocks_.push_back(std::move(block));
     return &blocks_.back();
   }
@@ -98,6 +104,11 @@ class Context {
   std::deque<Value> values_;
   std::deque<Operation> operations_;
   std::deque<Block> blocks_;
+
+  // Monotonic counters for default names (per kind, so v0.. and block0.. are
+  // each contiguous). No uniqueness check against creator-supplied names.
+  std::size_t value_id_ = 0;
+  std::size_t block_id_ = 0;
 };
 
 // Graph: the IR object passes work with. It owns an arena (Context) and the
@@ -123,11 +134,12 @@ class Graph {
   const Value* MakeInput(std::string name, Type type,
                          AnyOf<ValueImpl> impl = {});
 
-  // Create an empty block with the given level inputs. Returns a mutable
-  // builder handle; operations are added by MakeOperation(block, ...) and
-  // outputs declared via SetBlockOutputs. (Scheme "jia": build an inner block
-  // fully, then wrap it in a block-op.)
-  Block* MakeBlock(std::vector<const Value*> inputs = {});
+  // Create an empty block. `name` may be empty (auto-filled block0, block1...).
+  // Returns a mutable builder handle; operations are added by
+  // MakeOperation(block, ...) and outputs declared via SetBlockOutputs.
+  // (Scheme "jia": build an inner block fully, then wrap it in a block-op.)
+  Block* MakeBlock(std::vector<const Value*> inputs = {},
+                   std::string name = "");
 
   // Create an operation INSIDE `block` -- binding to a block is part of
   // creation, so no operation is ever free-floating. The op is appended to
