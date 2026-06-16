@@ -2,6 +2,7 @@
 #   pre-commit install
 # Run on all files once:
 #   pre-commit run --all-files
+exclude: '^third_party/'
 repos:
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v17.0.6

@@ -12,6 +12,7 @@ endif()
 add_compile_options(-Wall -Wextra)
 
 add_subdirectory(src/ir)
+add_subdirectory(src/cli)
 
 enable_testing()
 add_subdirectory(tests)
