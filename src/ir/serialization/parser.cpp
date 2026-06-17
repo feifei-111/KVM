@@ -297,7 +297,12 @@ class Parser {
     }
 
     std::string key = cur_.Ident();
-    Operator op = reg_.GetOperator(key).value_or(MakeBareOperator(key));
+    auto found = reg_.GetOperator(key);
+    if (!found) {
+      throw ParseError("unknown operator '" + key +
+                       "': no dialect has registered it");
+    }
+    Operator op = std::move(*found);
 
     AnyOf<OperationImpl> impl;
     if (cur_.Accept('<')) {
@@ -340,12 +345,6 @@ class Parser {
       symbols_[out_specs[i].name] = created[i];
       AttachAttrs(created[i], out_specs[i].attrs);
     }
-  }
-
-  static Operator MakeBareOperator(const std::string& key) {
-    auto dot = key.rfind('.');
-    if (dot == std::string::npos) return Operator{key, "", {}, {}};
-    return Operator{key.substr(dot + 1), key.substr(0, dot), {}, {}};
   }
 
   Cursor cur_;
