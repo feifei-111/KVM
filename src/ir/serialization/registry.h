@@ -55,6 +55,20 @@ class Registry {
     };
   }
 
+  // Operators are not reconstructed from text -- the serialized form only
+  // carries "dialect.name". A dialect registers each operator's full definition
+  // (with its input/output type signature) here, and the parser looks it up by
+  // key. (Types are just (name, dialect), so they need no registration: the
+  // parser builds them directly from the two strings.)
+  void RegisterOperator(const std::string& key, Operator op) {
+    operators_[key] = std::move(op);
+  }
+  std::optional<Operator> GetOperator(const std::string& key) const {
+    auto it = operators_.find(key);
+    if (it == operators_.end()) return std::nullopt;
+    return it->second;
+  }
+
   // --- serialize: returns the text inside `<...>`, or nullopt if no codec
   // (e.g. an impl with no registered leaf codec, such as the structural
   // BlockOpImpl, which the serializer handles itself). ---
@@ -97,6 +111,7 @@ class Registry {
   std::unordered_map<std::string, VDe> value_de_;
   std::unordered_map<std::string, OSer> op_ser_;
   std::unordered_map<std::string, ODe> op_de_;
+  std::unordered_map<std::string, Operator> operators_;
 };
 
 }  // namespace kvm::ir::serial
