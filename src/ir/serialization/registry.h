@@ -13,11 +13,14 @@
 // as<T>() / T construction) for that member. Registering a member is one line
 // and never touches the core.
 
+#include <algorithm>
 #include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "value.h"
 
@@ -101,7 +104,31 @@ class Registry {
     return it->second(text);
   }
 
+  // --- introspection (for `kvm show`) ---
+
+  // All registered operators, as (key, Operator). Sorted for stable output.
+  std::vector<std::pair<std::string, Operator>> Operators() const {
+    std::vector<std::pair<std::string, Operator>> out(operators_.begin(),
+                                                      operators_.end());
+    std::sort(out.begin(), out.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    return out;
+  }
+
+  // Keys of registered value-impl / operation-impl codecs (sorted).
+  std::vector<std::string> ValueImplKeys() const { return Keys(value_de_); }
+  std::vector<std::string> OperationImplKeys() const { return Keys(op_de_); }
+
  private:
+  template <class Map>
+  static std::vector<std::string> Keys(const Map& m) {
+    std::vector<std::string> out;
+    out.reserve(m.size());
+    for (const auto& [k, _] : m) out.push_back(k);
+    std::sort(out.begin(), out.end());
+    return out;
+  }
+
   using VSer = std::function<std::string(const AnyOf<ValueImpl>&)>;
   using VDe = std::function<AnyOf<ValueImpl>(std::string_view)>;
   using OSer = std::function<std::string(const AnyOf<OperationImpl>&)>;

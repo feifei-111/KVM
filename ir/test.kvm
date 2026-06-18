@@ -1,45 +1,13 @@
-graph.dist.config = {"backend":"nccl","ranks":[{"rank":0,"host":"node0","process":0,"device":"cuda:0"},{"rank":1,"host":"node0","process":1,"device":"cuda:1"},{"rank":2,"host":"node1","process":0,"device":"cuda:0"},{"rank":3,"host":"node1","process":1,"device":"cuda:1"}]}
-
-func @main(
-  %tokens: hlo.tensor<dtype=f16, shape=[8,4096]>,
-  %router_w: hlo.tensor<dtype=f16, shape=[4096,4]>,
-  %expert0_w1: hlo.tensor<dtype=f16, shape=[4096,14336]>,
-  %expert0_w2: hlo.tensor<dtype=f16, shape=[14336,4096]>,
-  %expert1_w1: hlo.tensor<dtype=f16, shape=[4096,14336]>,
-  %expert1_w2: hlo.tensor<dtype=f16, shape=[14336,4096]>,
-  %attn_q_w: hlo.tensor<dtype=f16, shape=[4096,4096]>,
-  %attn_k_w: hlo.tensor<dtype=f16, shape=[4096,4096]>,
-  %attn_v_w: hlo.tensor<dtype=f16, shape=[4096,4096]>,
-  %attn_mask: hlo.tensor<dtype=f16, shape=[8,8]>,
-  %kv_cache: hlo.kvcache<dtype=f16, block_shape=paged_vllm>,
-  %attn_meta: hlo.attn_meta {"tokens":{"seq_offsets":[0,4,8]},"positions":{"start_positions":[12,28]},"kvcache":{"block_size":16,"block_indices":[[3],[7,8]],"seq_lengths":[16,32]},"attn_mask":"masked"}
-) -> (hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.kvcache<dtype=f16, block_shape=paged_vllm>) {
-  %moe_dist: hlo.all_to_all_desc = ir.constant() {"ranks":[0,1,2,3]}
-
-  %router_logits: hlo.tensor<dtype=f16, shape=[8,4]> = hlo.matmul(%tokens, %router_w)
-  %router_probs: hlo.tensor<dtype=f16, shape=[8,4]> = hlo.arith.exp(%router_logits)
-
-  %attn_q: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.matmul(%tokens, %attn_q_w)
-  %attn_k: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.matmul(%tokens, %attn_k_w)
-  %attn_v: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.matmul(%tokens, %attn_v_w)
-  %attn_q_rope: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.attn.rope(%attn_q, %attn_meta)
-  %attn_k_rope: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.attn.rope(%attn_k, %attn_meta)
-  %cached_k: hlo.tensor<dtype=f16, shape=[8,4096]>, %cached_v: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.kvcache.read(%kv_cache, %attn_meta)
-  %updated_cache: hlo.kvcache<dtype=f16, block_shape=paged_vllm> = hlo.kvcache.write(%kv_cache, %attn_meta, %attn_k_rope, %attn_v)
-  %attn_k_all: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.arith.add(%attn_k_rope, %cached_k)
-  %attn_v_all: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.arith.add(%attn_v, %cached_v)
-  %attn_out: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.attn.prefill(%attn_q_rope, %attn_k_all, %attn_v_all, %attn_mask, %attn_meta)
-
-  %dispatched: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.comm.dispatch(%tokens, %router_probs, %moe_dist)
-  %expert0_hidden: hlo.tensor<dtype=f16, shape=[8,14336]> = hlo.matmul(%dispatched, %expert0_w1)
-  %expert1_hidden: hlo.tensor<dtype=f16, shape=[8,14336]> = hlo.matmul(%dispatched, %expert1_w1)
-  %expert0_act: hlo.tensor<dtype=f16, shape=[8,14336]> = hlo.arith.max(%expert0_hidden, %expert0_hidden)
-  %expert1_act: hlo.tensor<dtype=f16, shape=[8,14336]> = hlo.arith.max(%expert1_hidden, %expert1_hidden)
-  %expert0_out: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.matmul(%expert0_act, %expert0_w2)
-  %expert1_out: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.matmul(%expert1_act, %expert1_w2)
-  %expert_sum: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.arith.add(%expert0_out, %expert1_out)
-  %combined: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.comm.combine(%expert_sum, %router_probs, %moe_dist)
-
-  %model_out: hlo.tensor<dtype=f16, shape=[8,4096]> = hlo.arith.add(%combined, %attn_out)
-  return %model_out, %updated_cache : hlo.tensor<dtype=f16, shape=[8,4096]>, hlo.kvcache<dtype=f16, block_shape=paged_vllm>
+graph {
+  config { ranks = [0, 1], kv = {layout=page_first, layer_size=4096, block_size=16, token_bytes=2} }
+  ^main(%tokens: kernel.tensor<dtype=f16, shape=[8,4096]>, %wq: kernel.tensor<dtype=f16, shape=[4096,4096]>, %wk: kernel.tensor<dtype=f16, shape=[4096,4096]>, %wv: kernel.tensor<dtype=f16, shape=[4096,4096]>, %wo: kernel.tensor<dtype=f16, shape=[4096,4096]>, %meta: kernel.attn_meta<q={off=[0,8],pos=[0]}, kv={off=[0,8],pos=[0],blocks=[[0]]}, mask=causal>) {
+    %q: kernel.tensor<dtype=f16, shape=[8,4096]> = kernel.matmul(%tokens, %wq)
+    %k: kernel.tensor<dtype=f16, shape=[8,4096]> = kernel.matmul(%tokens, %wk)
+    %v: kernel.tensor<dtype=f16, shape=[8,4096]> = kernel.matmul(%tokens, %wv)
+    %qr: kernel.tensor<dtype=f16, shape=[8,4096]> = kernel.attn.rope(%q, %meta)
+    %kr: kernel.tensor<dtype=f16, shape=[8,4096]> = kernel.attn.rope(%k, %meta)
+    %attn: kernel.tensor<dtype=f16, shape=[8,4096]> = kernel.attn.prefill(%qr, %kr, %v, %meta)
+    %out: kernel.tensor<dtype=f16, shape=[8,4096]> = kernel.matmul(%attn, %wo)
+    return %out
+  }
 }

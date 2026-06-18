@@ -189,18 +189,50 @@ class Parser {
   void ParseConfig() {
     cur_.AcceptWord("config");
     cur_.Expect('{');
-    std::string key = cur_.Ident();
-    cur_.Expect('=');
-    cur_.Expect('[');
-    std::vector<int> ranks;
-    if (!cur_.Accept(']')) {
-      do {
-        ranks.push_back(std::stoi(cur_.Until(",]")));
-      } while (cur_.Accept(','));
-      cur_.Expect(']');
-    }
-    if (key == "ranks") g_.config().dist.all_ranks = std::move(ranks);
+    if (cur_.Accept('}')) return;
+    do {
+      std::string key = cur_.Ident();
+      cur_.Expect('=');
+      if (key == "ranks") {
+        cur_.Expect('[');
+        std::vector<int> ranks;
+        if (!cur_.Accept(']')) {
+          do {
+            ranks.push_back(std::stoi(cur_.Until(",]")));
+          } while (cur_.Accept(','));
+          cur_.Expect(']');
+        }
+        g_.config().dist.all_ranks = std::move(ranks);
+      } else if (key == "kv") {
+        ParseKVMeta();
+      } else {
+        cur_.Until(",}");  // unknown config key: skip its value
+      }
+    } while (cur_.Accept(','));
     cur_.Expect('}');
+  }
+
+  // kv = {layout=page_first, layer_size=.., block_size=.., token_bytes=..}
+  void ParseKVMeta() {
+    cur_.Expect('{');
+    KVMeta kv;
+    if (!cur_.Accept('}')) {
+      do {
+        std::string k = cur_.Ident();
+        cur_.Expect('=');
+        std::string v = cur_.Until(",}");
+        if (k == "layout")
+          kv.layout = KVLayoutFromName(v);
+        else if (k == "layer_size")
+          kv.layer_size = std::stoi(v);
+        else if (k == "block_size")
+          kv.block_size = std::stoi(v);
+        else if (k == "token_bytes")
+          kv.token_bytes = std::stoi(v);
+      } while (cur_.Accept(','));
+      cur_.Expect('}');
+    }
+    g_.config().kv = kv;
   }
 
   // `{k = v, ...}` -> pairs; empty if no '{'.

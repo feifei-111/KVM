@@ -60,15 +60,37 @@ class Serializer {
   void Indent(int n) { out_.append(n * 2, ' '); }
 
   void RenderConfig() {
-    const auto& ranks = g_.config().dist.all_ranks;
-    if (ranks.empty()) return;
+    const GraphConfig& cfg = g_.config();
+    const auto& ranks = cfg.dist.all_ranks;
+    const KVMeta& kv = cfg.kv;
+    bool has_kv = kv.layer_size || kv.block_size || kv.token_bytes ||
+                  kv.layout != KVLayout::kLayerFirst;
+    if (ranks.empty() && !has_kv) return;
+
     Indent(1);
-    out_ += "config { ranks = [";
-    for (std::size_t i = 0; i < ranks.size(); ++i) {
-      if (i) out_ += ", ";
-      out_ += std::to_string(ranks[i]);
+    out_ += "config {";
+    bool first = true;
+    auto sep = [&] {
+      out_ += first ? " " : ", ";
+      first = false;
+    };
+    if (!ranks.empty()) {
+      sep();
+      out_ += "ranks = [";
+      for (std::size_t i = 0; i < ranks.size(); ++i) {
+        if (i) out_ += ", ";
+        out_ += std::to_string(ranks[i]);
+      }
+      out_ += "]";
     }
-    out_ += "] }\n";
+    if (has_kv) {
+      sep();
+      out_ += "kv = {layout=" + KVLayoutName(kv.layout) +
+              ", layer_size=" + std::to_string(kv.layer_size) +
+              ", block_size=" + std::to_string(kv.block_size) +
+              ", token_bytes=" + std::to_string(kv.token_bytes) + "}";
+    }
+    out_ += " }\n";
   }
 
   // `{attr}` for a host, or "" if no (renderable) attrs.
