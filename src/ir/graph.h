@@ -42,6 +42,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "kv_meta.h"
 #include "value.h"
 
 namespace kvm::ir {
@@ -51,9 +52,10 @@ struct DistConfig {
   std::vector<int> all_ranks;
 };
 
-// GraphConfig :: (DistConfig)
+// GraphConfig :: (DistConfig, KVMeta)
 struct GraphConfig {
   DistConfig dist;
+  KVMeta kv;
 };
 
 // BlockOpImpl<OperationImpl> :: (block: Block)
