@@ -1,17 +1,17 @@
 #pragma once
 
-// Small text helpers shared by the kernel dialect's impl codecs: formatting and
+// Small text helpers shared by the dialects' impl codecs: formatting and
 // parsing the compact `key=value` / list forms used inside `<...>`.
 //
-// These are dialect-local conveniences; the serialization framework only
-// requires each impl to expose Serialize()/Deserialize(), and these helpers
-// keep those implementations short.
+// These are dialect-local conveniences (kept at the dialect root so every
+// dialect shares one copy); the serialization framework only requires each impl
+// to expose Serialize()/Deserialize(), and these helpers keep those short.
 
 #include <string>
 #include <string_view>
 #include <vector>
 
-namespace kvm::ir::kernel::text {
+namespace kvm::ir::dialect::text {
 
 // "[1,2,3]" <-> vector<int>. Empty vector -> "[]".
 inline std::string FormatInts(const std::vector<int>& v) {
@@ -86,4 +86,4 @@ inline std::vector<std::vector<int>> ParseIntLists(std::string_view s) {
   return out;
 }
 
-}  // namespace kvm::ir::kernel::text
+}  // namespace kvm::ir::dialect::text

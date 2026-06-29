@@ -1,12 +1,14 @@
 #pragma once
 
-// Dtype for the kernel-graph dialect. A small enum with text round-tripping,
-// used by TensorImpl. Kept dialect-local (the core IR has no dtype concept).
+// Dtype shared by the dialects (kernel, task, ...). A small enum with text
+// round-tripping, used by their tensor values. Kept at the dialect root (not
+// inside any one dialect) so every dialect uses the same element type without
+// depending on another dialect; the core IR has no dtype concept.
 
 #include <string>
 #include <string_view>
 
-namespace kvm::ir::kernel {
+namespace kvm::ir::dialect {
 
 enum class Dtype {
   kI16,
@@ -44,4 +46,4 @@ inline Dtype DtypeFromName(std::string_view s) {
   return Dtype::kF32;
 }
 
-}  // namespace kvm::ir::kernel
+}  // namespace kvm::ir::dialect

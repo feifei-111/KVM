@@ -1,10 +1,12 @@
 #pragma once
 
-// Distribution / collective OperationImpls for the kernel-graph dialect.
+// Operators of the kernel-graph dialect: the OperationImpls it defines.
 //
-// These carry the rank constants that the op name alone cannot express (a
-// `send` is not meaningful without knowing from/to). They are static graph
-// constants, so they live on the OperationImpl (not as value inputs).
+// Currently the distribution / collective ops, which carry rank constants the
+// op name alone can't express (a `send` is meaningless without from/to). These
+// are static graph constants, so they live on the OperationImpl (not as value
+// inputs). Most kernel ops need no impl (their signature is enough); only these
+// do, so this is the "ops" half of the dialect.
 //
 //   SendOp/RecvOp   :: (from: Int, to: Int)
 //   BroadcastOp     :: (from: Int, to: [Int])
@@ -17,10 +19,12 @@
 #include <string_view>
 #include <vector>
 
-#include "dialect/kernel/text_util.h"
+#include "dialect/text_util.h"
 #include "value.h"
 
 namespace kvm::ir::kernel {
+
+namespace text = dialect::text;
 
 namespace detail {
 // shared helpers for "from=I, to=I" and "ranks=[...]" forms

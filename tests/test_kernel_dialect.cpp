@@ -2,10 +2,9 @@
 // parse back through the registered operators, and check round-trip.
 #include <string>
 
-#include "dialect/kernel/attn.h"
 #include "dialect/kernel/dialect.h"
-#include "dialect/kernel/dist.h"
-#include "dialect/kernel/tensor.h"
+#include "dialect/kernel/ops.h"
+#include "dialect/kernel/values.h"
 #include "graph.h"
 #include "serialization/parser.h"
 #include "serialization/serializer.h"

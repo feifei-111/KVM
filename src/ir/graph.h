@@ -42,21 +42,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "kv_meta.h"
+#include "graph_config.h"
 #include "value.h"
 
 namespace kvm::ir {
-
-// DistConfig :: (all_ranks: [Int]) -- minimal for now; to be expanded later.
-struct DistConfig {
-  std::vector<int> all_ranks;
-};
-
-// GraphConfig :: (DistConfig, KVMeta)
-struct GraphConfig {
-  DistConfig dist;
-  KVMeta kv;
-};
 
 // BlockOpImpl<OperationImpl> :: (block: Block)
 // The operation impl that carries a nested block. An operation whose op is a

@@ -1,4 +1,4 @@
-#include "dialect/kernel/dist.h"
+#include "dialect/kernel/ops.h"
 
 #include <string>
 #include <string_view>

@@ -19,15 +19,26 @@ add_library(kvm_obj OBJECT
   src/ir/serialization/serializer.cpp
   src/ir/serialization/parser.cpp
   src/ir/visualization/visualizer.cpp
-  src/dialect/kernel/attn.cpp
-  src/dialect/kernel/dist.cpp
-  src/dialect/kernel/dialect.cpp
+  src/ir/dialect/kernel/values.cpp
+  src/ir/dialect/kernel/ops.cpp
+  src/ir/dialect/kernel/dialect.cpp
+  src/ir/dialect/task/ops.cpp
+  src/ir/dialect/task/dialect.cpp
+  src/ir/dialect/tile/ops.cpp
+  src/ir/dialect/tile/verify.cpp
+  src/ir/dialect/tile/dialect.cpp
 )
-# Headers are included both as "graph.h" (within ir) and "dialect/kernel/..".
+# Headers are included relative to the ir root, e.g. "graph.h",
+# "dialect/kernel/values.h", "serialization/registry.h".
 target_include_directories(kvm_obj PUBLIC
-  ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/src/ir
 )
+
+# glog for logging (VLOG) and assertions (CHECK). Found via the system install
+# (e.g. Homebrew); not vendored. PUBLIC so the kvm binary and tests linking
+# kvm_obj also get it.
+find_package(glog REQUIRED)
+target_link_libraries(kvm_obj PUBLIC glog::glog)
 
 # CLI11 (header-only) is vendored as a git submodule under third_party/CLI11.
 set(CLI11_DIR ${CMAKE_SOURCE_DIR}/third_party/CLI11)

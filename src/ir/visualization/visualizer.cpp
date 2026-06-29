@@ -1,5 +1,6 @@
 #include "visualization/visualizer.h"
 
+#include <glog/logging.h>
 #include <unistd.h>
 
 #include <any>
@@ -8,7 +9,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -136,25 +136,23 @@ std::string RunDotToSvg(const std::string& dot_text) {
   std::vector<char> in_path(tmpl.begin(), tmpl.end());
   in_path.push_back('\0');
   int fd = ::mkstemp(in_path.data());
-  if (fd < 0) throw std::runtime_error("visualizer: cannot create temp file");
+  CHECK(fd >= 0) << "visualizer: cannot create temp file";
   ::close(fd);
   std::string in(in_path.data());
   std::string svg_path = in + ".svg";
 
   {
     FILE* f = std::fopen(in.c_str(), "wb");
-    if (!f) throw std::runtime_error("visualizer: cannot write temp dot");
+    CHECK(f) << "visualizer: cannot write temp dot";
     std::fwrite(dot_text.data(), 1, dot_text.size(), f);
     std::fclose(f);
   }
 
   std::string cmd = "dot -Tsvg '" + in + "' -o '" + svg_path + "' 2>/dev/null";
   int rc = std::system(cmd.c_str());
-  if (rc != 0) {
-    std::remove(in.c_str());
-    throw std::runtime_error(
-        "visualizer: `dot` failed (is Graphviz installed and on PATH?)");
-  }
+  if (rc != 0) std::remove(in.c_str());
+  CHECK(rc == 0) << "visualizer: `dot` failed (is Graphviz installed and on "
+                    "PATH?)";
 
   std::string svg;
   if (FILE* f = std::fopen(svg_path.c_str(), "rb")) {
