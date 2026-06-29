@@ -1,5 +1,7 @@
 #include "serialization/parser.h"
 
+#include <glog/logging.h>
+
 #include <any>
 #include <cctype>
 #include <cstdint>
@@ -29,10 +31,8 @@ class Cursor {
 
   void Expect(char c) {
     SkipWs();
-    if (Peek() != c) {
-      throw ParseError(std::string("expected '") + c +
-                       "' near: " + std::string(s_.substr(pos_, 24)));
-    }
+    CHECK(Peek() == c) << "parse: expected '" << c
+                       << "' near: " << s_.substr(pos_, 24);
     ++pos_;
   }
 
@@ -71,10 +71,8 @@ class Cursor {
     SkipWs();
     std::size_t start = pos_;
     while (!Eof() && IsIdent(s_[pos_])) ++pos_;
-    if (pos_ == start) {
-      throw ParseError("expected identifier near: " +
-                       std::string(s_.substr(pos_, 24)));
-    }
+    CHECK(pos_ != start) << "parse: expected identifier near: "
+                         << s_.substr(pos_, 24);
     return std::string(s_.substr(start, pos_ - start));
   }
 
@@ -169,7 +167,7 @@ class Parser {
       : cur_(text), reg_(reg), g_(g) {}
 
   AttrMap Run() {
-    if (!cur_.AcceptWord("graph")) throw ParseError("expected 'graph'");
+    CHECK(cur_.AcceptWord("graph")) << "parse: expected 'graph'";
     cur_.Expect('{');
     if (PeekWord("config")) ParseConfig();
     Block* main = ParseBlock();
@@ -271,7 +269,7 @@ class Parser {
     cur_.Expect('%');
     std::string name = cur_.Ident();
     auto it = symbols_.find(name);
-    if (it == symbols_.end()) throw ParseError("undefined value %" + name);
+    CHECK(it != symbols_.end()) << "parse: undefined value %" << name;
     return it->second;
   }
 
@@ -330,10 +328,8 @@ class Parser {
 
     std::string key = cur_.Ident();
     auto found = reg_.GetOperator(key);
-    if (!found) {
-      throw ParseError("unknown operator '" + key +
-                       "': no dialect has registered it");
-    }
+    CHECK(found) << "parse: unknown operator '" << key
+                 << "': no dialect has registered it";
     Operator op = std::move(*found);
 
     AnyOf<OperationImpl> impl;

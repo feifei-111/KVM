@@ -1,6 +1,8 @@
 #include "dialects.h"
 
 #include "dialect/kernel/dialect.h"
+#include "dialect/task/dialect.h"
+#include "dialect/tile/dialect.h"
 #include "serialization/builtin_codecs.h"
 
 namespace kvm::cli {
@@ -8,6 +10,8 @@ namespace kvm::cli {
 const std::vector<DialectEntry>& Dialects() {
   static const std::vector<DialectEntry> kDialects = {
       {"kernel", &kvm::ir::kernel::RegisterKernelDialect},
+      {"task", &kvm::ir::task::RegisterTaskDialect},
+      {"tile", &kvm::ir::tile::RegisterTileDialect},
   };
   return kDialects;
 }

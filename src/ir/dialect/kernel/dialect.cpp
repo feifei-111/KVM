@@ -3,9 +3,8 @@
 #include <string>
 #include <vector>
 
-#include "dialect/kernel/attn.h"
-#include "dialect/kernel/dist.h"
-#include "dialect/kernel/tensor.h"
+#include "dialect/kernel/ops.h"
+#include "dialect/kernel/values.h"
 #include "value.h"
 
 namespace kvm::ir::kernel {

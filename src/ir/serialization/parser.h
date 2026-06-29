@@ -15,8 +15,9 @@
 //   - {attr}                   -> JSON-like scalars into the AttrMap.
 //
 // Everything lives under serialization/; core IR headers are untouched.
+// Malformed input is a hard error: parsing CHECK-fails (aborts) rather than
+// returning a status -- this is an early, self-used tool.
 
-#include <stdexcept>
 #include <string>
 
 #include "attr.h"
@@ -24,11 +25,6 @@
 #include "serialization/registry.h"
 
 namespace kvm::ir::serial {
-
-// Thrown on malformed input.
-struct ParseError : std::runtime_error {
-  using std::runtime_error::runtime_error;
-};
 
 // Parse text into the given (empty) graph, returning the attrs found. The graph
 // is built in place (it owns the arena); `registry` supplies operator

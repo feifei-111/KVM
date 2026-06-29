@@ -4,11 +4,12 @@
 //   kvm show dialect                 list available dialects
 //   kvm show d:<name>                list a dialect's registered ops + impls
 
+#include <glog/logging.h>
+
 #include <CLI/CLI.hpp>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 
 #include "attr.h"
@@ -22,7 +23,7 @@ namespace {
 
 std::string ReadFile(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
-  if (!in) throw std::runtime_error("cannot open input: " + path);
+  CHECK(in) << "cannot open input: " << path;
   std::ostringstream ss;
   ss << in.rdbuf();
   return ss.str();
@@ -30,7 +31,7 @@ std::string ReadFile(const std::string& path) {
 
 void WriteFile(const std::string& path, const std::string& content) {
   std::ofstream out(path, std::ios::binary);
-  if (!out) throw std::runtime_error("cannot open output: " + path);
+  CHECK(out) << "cannot open output: " << path;
   out << content;
 }
 
@@ -98,6 +99,9 @@ int ShowDialect(const std::string& name) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  google::InitGoogleLogging(argv[0]);
+  google::LogToStderr();
+
   CLI::App app{"kvm -- KVM IR command-line tool"};
   app.set_version_flag("--version", "kvm 0.0.0");
   app.require_subcommand(0, 1);
@@ -118,25 +122,19 @@ int main(int argc, char** argv) {
 
   CLI11_PARSE(app, argc, argv);
 
-  try {
-    if (show->parsed()) {
-      if (target == "dialect") return ShowDialects();
-      if (target.rfind("d:", 0) == 0) return ShowDialect(target.substr(2));
-      std::fprintf(
-          stderr,
-          "kvm: unknown show target '%s' (use 'dialect' or 'd:<name>')\n",
-          target.c_str());
-      return 1;
-    }
-
-    // default action: visualize, requires -i and -o
-    if (input.empty() || output.empty()) {
-      std::fprintf(stderr, "%s", app.help().c_str());
-      return 1;
-    }
-    return RunVisualize(input, output);
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "kvm: %s\n", e.what());
+  if (show->parsed()) {
+    if (target == "dialect") return ShowDialects();
+    if (target.rfind("d:", 0) == 0) return ShowDialect(target.substr(2));
+    std::fprintf(
+        stderr, "kvm: unknown show target '%s' (use 'dialect' or 'd:<name>')\n",
+        target.c_str());
     return 1;
   }
+
+  // default action: visualize, requires -i and -o
+  if (input.empty() || output.empty()) {
+    std::fprintf(stderr, "%s", app.help().c_str());
+    return 1;
+  }
+  return RunVisualize(input, output);
 }
