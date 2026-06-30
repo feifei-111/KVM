@@ -1,4 +1,5 @@
-// Tests for the external attribute map.
+// Tests for the external attribute map. Hosts are topology nodes (ValueNode /
+// OpNode / Block).
 #include <any>
 #include <string>
 
@@ -14,11 +15,11 @@ Type T() { return {"tensor", "hlo"}; }
 
 KVM_TEST(attr_set_get_on_each_host_kind) {
   Graph g;
-  const Value* v = g.MakeInput("v", T());
-  Block* root = g.MakeBlock();
+  Block* root = g.MakeRoot();
+  ValueNode* v = root->AddArgument(Value{"v", T(), {}});
   Operator add{"add", "hlo", {T(), T()}, {T()}};
-  const Operation* op =
-      g.MakeOperation(root, add, {}, {v, v}, {Value{"y", T(), {}}});
+  OpNode* op =
+      root->MakeOperation(Operation{add, {}}, {v, v}, {Value{"y", T(), {}}});
 
   AttrMap attrs;
   attrs.Set(v, "rank", 3)
@@ -34,7 +35,8 @@ KVM_TEST(attr_set_get_on_each_host_kind) {
 
 KVM_TEST(attr_missing_is_null) {
   Graph g;
-  const Value* v = g.MakeInput("v", T());
+  Block* root = g.MakeRoot();
+  ValueNode* v = root->AddArgument(Value{"v", T(), {}});
   AttrMap attrs;
   KVM_CHECK(attrs.Get(v, "missing") == nullptr);
   KVM_CHECK(!attrs.Has(v, "missing"));
@@ -42,7 +44,8 @@ KVM_TEST(attr_missing_is_null) {
 
 KVM_TEST(attr_remove) {
   Graph g;
-  const Value* v = g.MakeInput("v", T());
+  Block* root = g.MakeRoot();
+  ValueNode* v = root->AddArgument(Value{"v", T(), {}});
   AttrMap attrs;
   attrs.Set(v, "k", 1);
   KVM_CHECK(attrs.Remove(v, "k"));
@@ -51,12 +54,13 @@ KVM_TEST(attr_remove) {
 }
 
 KVM_TEST(attr_does_not_touch_node) {
-  // Attrs are external: the value carries no attr storage of its own.
+  // Attrs are external: the node carries no attr storage of its own.
   Graph g;
-  const Value* v = g.MakeInput("v", T());
+  Block* root = g.MakeRoot();
+  ValueNode* v = root->AddArgument(Value{"v", T(), {}});
   AttrMap attrs;
   attrs.Set(v, "k", 1);
-  KVM_CHECK(!v->impl.has_value());  // node unchanged by attaching an attr
+  KVM_CHECK(!v->value().impl.has_value());  // node unchanged by attaching attr
 }
 
 KVM_RUN_ALL()

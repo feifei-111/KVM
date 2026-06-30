@@ -13,16 +13,14 @@
 // naming rule such a difference is a different op, not a device query here.
 // Deferred ops fall through to Ok().
 
-#include <span>
-
-#include "value.h"
+#include "node.h"
 #include "verify_result.h"
 
 namespace kvm::ir::tile {
 
-// Verify one tile operation. `ins`/`outs` are the operation's input/output
-// values (as Graph hands them out). Returns ok, or a reason on failure.
-VerifyResult Verify(const Operation* op, std::span<const Value* const> ins,
-                    std::span<const Value* const> outs);
+// Verify one tile operation. The op node carries its own input/output values
+// (operands/results), so that is all that is needed. Returns ok, or a reason
+// on failure.
+VerifyResult Verify(const OpNode* op);
 
 }  // namespace kvm::ir::tile

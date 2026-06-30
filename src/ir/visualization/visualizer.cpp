@@ -24,10 +24,10 @@ namespace {
 // and the SVG <title> lookup keys.
 class Ids {
  public:
-  std::string ValueId(const Value* v) {
+  std::string ValueId(const ValueNode* v) {
     return "value" + std::to_string(Index(value_, v));
   }
-  std::string OpId(const Operation* o) {
+  std::string OpId(const OpNode* o) {
     return "op" + std::to_string(Index(op_, o));
   }
 
@@ -37,8 +37,8 @@ class Ids {
     auto [it, inserted] = m.try_emplace(p, m.size());
     return it->second;
   }
-  std::unordered_map<const Value*, std::size_t> value_;
-  std::unordered_map<const Operation*, std::size_t> op_;
+  std::unordered_map<const ValueNode*, std::size_t> value_;
+  std::unordered_map<const OpNode*, std::size_t> op_;
 };
 
 std::string DotEscape(const std::string& s) {
@@ -71,19 +71,20 @@ struct Style {
 
 // Value coloring: block outputs green, level inputs (no def) blue, op results
 // gray -- matching the Rust palette.
-Style ValueStyle(const Graph& g, const Value* v,
-                 const std::unordered_set<const Value*>& outputs) {
+Style ValueStyle(const ValueNode* v,
+                 const std::unordered_set<const ValueNode*>& outputs) {
   if (outputs.count(v)) return {"#bbf7d0", "#15803d"};
-  if (g.GetDef(v) == nullptr) return {"#dbeafe", "#1d4ed8"};
+  if (v->def() == nullptr) return {"#dbeafe", "#1d4ed8"};
   return {"#f3f4f6", "#4b5563"};
 }
 
-void EmitValue(const Graph& g, Ids& ids, std::string& out,
-               const std::unordered_set<const Value*>& outputs,
-               std::unordered_set<const Value*>& seen, const Value* v) {
+void EmitValue(Ids& ids, std::string& out,
+               const std::unordered_set<const ValueNode*>& outputs,
+               std::unordered_set<const ValueNode*>& seen, const ValueNode* v) {
   if (!seen.insert(v).second) return;
-  Style s = ValueStyle(g, v, outputs);
-  out += "  " + ids.ValueId(v) + " [label=\"" + DotEscape("%" + v->name) +
+  Style s = ValueStyle(v, outputs);
+  out += "  " + ids.ValueId(v) + " [label=\"" +
+         DotEscape("%" + v->value().name) +
          "\", shape=box, style=\"filled\", fillcolor=\"" + s.fill +
          "\", color=\"" + s.stroke + "\"];\n";
 }
@@ -97,29 +98,29 @@ std::string RenderDot(const Graph& g) {
   out += "  node [fontname=\"Menlo\"];\n";
   out += "  edge [fontname=\"Menlo\"];\n";
 
-  const Block* block = g.main();
-  std::unordered_set<const Value*> outputs;
+  const Block* block = g.root();
+  std::unordered_set<const ValueNode*> outputs;
   if (block) {
-    for (const Value* v : block->outputs) outputs.insert(v);
+    for (const ValueNode* v : block->outputs()) outputs.insert(v);
   }
 
-  std::unordered_set<const Value*> seen;
+  std::unordered_set<const ValueNode*> seen;
   if (block) {
-    for (const Value* v : block->inputs)
-      EmitValue(g, ids, out, outputs, seen, v);
-    for (const Value* v : block->outputs)
-      EmitValue(g, ids, out, outputs, seen, v);
-    for (const Operation* op : block->operations) {
+    for (const ValueNode* v : block->arguments())
+      EmitValue(ids, out, outputs, seen, v);
+    for (const ValueNode* v : block->outputs())
+      EmitValue(ids, out, outputs, seen, v);
+    for (const OpNode* op : block->operations()) {
       out += "  " + ids.OpId(op) + " [label=\"" +
-             DotEscape(OperatorText(op->op)) +
+             DotEscape(OperatorText(op->op().op)) +
              "\", shape=ellipse, style=\"filled\", fillcolor=\"#fde68a\", "
              "color=\"#b45309\"];\n";
-      for (const Value* operand : g.GetInputs(op)) {
-        EmitValue(g, ids, out, outputs, seen, operand);
+      for (const ValueNode* operand : op->operands()) {
+        EmitValue(ids, out, outputs, seen, operand);
         out += "  " + ids.ValueId(operand) + " -> " + ids.OpId(op) + ";\n";
       }
-      for (const Value* result : g.GetOutputs(op)) {
-        EmitValue(g, ids, out, outputs, seen, result);
+      for (const ValueNode* result : op->results()) {
+        EmitValue(ids, out, outputs, seen, result);
         out += "  " + ids.OpId(op) + " -> " + ids.ValueId(result) + ";\n";
       }
     }
@@ -247,19 +248,19 @@ struct Detail {
   std::string text;
 };
 
-std::string ValueName(const Value* v) { return "%" + v->name; }
+std::string ValueName(const ValueNode* v) { return "%" + v->value().name; }
 
 void PushValueDetail(Ids& ids, const AttrMap* attrs,
-                     std::unordered_set<const Value*>& seen, const Value* v,
-                     std::vector<Detail>& out) {
+                     std::unordered_set<const ValueNode*>& seen,
+                     const ValueNode* v, std::vector<Detail>& out) {
   if (!seen.insert(v).second) return;
   std::string text = "name: " + ValueName(v) + "\n" +
-                     "type: " + TypeText(v->type) + "\n" + "attrs:\n" +
+                     "type: " + TypeText(v->value().type) + "\n" + "attrs:\n" +
                      AttrText(attrs, v);
   out.push_back({ids.ValueId(v), ValueName(v), std::move(text)});
 }
 
-std::string ValueList(std::span<const Value* const> vs) {
+std::string ValueList(const std::vector<ValueNode*>& vs) {
   if (vs.empty()) return "()";
   std::string s;
   for (std::size_t i = 0; i < vs.size(); ++i) {
@@ -274,24 +275,25 @@ std::vector<Detail> BuildDetails(const Graph& g, Ids& ids,
   std::vector<Detail> details;
   details.push_back({"graph", "Graph", "attrs:\n{}"});
 
-  const Block* block = g.main();
+  const Block* block = g.root();
   if (!block) return details;
 
-  std::unordered_set<const Value*> seen;
-  for (const Value* v : block->inputs)
+  std::unordered_set<const ValueNode*> seen;
+  for (const ValueNode* v : block->arguments())
     PushValueDetail(ids, attrs, seen, v, details);
-  for (const Value* v : block->outputs)
+  for (const ValueNode* v : block->outputs())
     PushValueDetail(ids, attrs, seen, v, details);
 
-  for (const Operation* op : block->operations) {
-    std::string text = "operation: " + OperatorText(op->op) + "\n" +
-                       "inputs: " + ValueList(g.GetInputs(op)) + "\n" +
-                       "outputs: " + ValueList(g.GetOutputs(op)) + "\n" +
+  for (const OpNode* op : block->operations()) {
+    const std::string op_text = OperatorText(op->op().op);
+    std::string text = "operation: " + op_text + "\n" +
+                       "inputs: " + ValueList(op->operands()) + "\n" +
+                       "outputs: " + ValueList(op->results()) + "\n" +
                        "attrs:\n" + AttrText(attrs, op);
-    details.push_back({ids.OpId(op), OperatorText(op->op), std::move(text)});
-    for (const Value* v : g.GetInputs(op))
+    details.push_back({ids.OpId(op), op_text, std::move(text)});
+    for (const ValueNode* v : op->operands())
       PushValueDetail(ids, attrs, seen, v, details);
-    for (const Value* v : g.GetOutputs(op))
+    for (const ValueNode* v : op->results())
       PushValueDetail(ids, attrs, seen, v, details);
   }
   return details;

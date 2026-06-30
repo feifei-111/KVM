@@ -2,11 +2,14 @@
 
 #include <glog/logging.h>
 
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "dialect/tile/ops.h"
 #include "dialect/tile/values.h"
+#include "node.h"
 
 namespace kvm::ir::tile {
 namespace {
@@ -126,17 +129,26 @@ VerifyResult Mma(std::string_view name, std::span<const Value* const> ins,
 
 }  // namespace
 
-VerifyResult Verify(const Operation* op, std::span<const Value* const> ins,
-                    std::span<const Value* const> outs) {
-  const std::string& n = op->op.name;
+VerifyResult Verify(const OpNode* op) {
+  // Pull the payload values out of the node's operand/result edges.
+  std::vector<const Value*> in_vals;
+  std::vector<const Value*> out_vals;
+  in_vals.reserve(op->operands().size());
+  out_vals.reserve(op->results().size());
+  for (const ValueNode* v : op->operands()) in_vals.push_back(&v->value());
+  for (const ValueNode* v : op->results()) out_vals.push_back(&v->value());
+  std::span<const Value* const> ins(in_vals);
+  std::span<const Value* const> outs(out_vals);
+
+  const std::string& n = op->op().op.name;
 
   if (n == "tc.mma") {
-    const MmaOp* mm = op->impl.as<MmaOp>();
+    const MmaOp* mm = op->op().impl.as<MmaOp>();
     if (!mm) return VerifyResult::Fail("tc.mma: missing MmaOp impl");
     return Mma(n, ins, outs, /*acc=*/false, mm->m, mm->n, mm->k);
   }
   if (n == "tc.mma_acc") {
-    const MmaAccOp* mm = op->impl.as<MmaAccOp>();
+    const MmaAccOp* mm = op->op().impl.as<MmaAccOp>();
     if (!mm) return VerifyResult::Fail("tc.mma_acc: missing MmaAccOp impl");
     return Mma(n, ins, outs, /*acc=*/true, mm->m, mm->n, mm->k);
   }

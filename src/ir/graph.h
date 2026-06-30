@@ -1,56 +1,46 @@
 #pragma once
 
-// Graph structure for the KVM IR.
+// Graph structure for the KVM IR: ownership (Arena), topology (Block), and the
+// top-level aggregate (Graph).
 //
-// The ADT declares the graph relations as FUNCTIONS, not fields:
+// Layering (settled design):
+//   - Arena OWNS all node storage -- every ValueNode, OpNode, and Block lives
+//     in one arena, hung off the Graph. Stable addresses (deque) let nodes
+//     refer to each other by raw pointer with no dangling and no cycles.
+//   - Block MANAGES TOPOLOGY for its own level: the op order, its argument and
+//     output value lists, and the def/use/operand/result edges among the nodes
+//     it contains. A Block does not own nodes; it asks the arena for storage
+//     and then wires the edges. This is the single atomic write path, so the
+//     redundant forward/reverse edges on nodes cannot drift.
+//   - Graph is just (root: Block, config). It holds the arena and the root
+//     block; it has no building methods of its own -- you build through a
+//     Block.
 //
-//   GetDef     :: Value -> (Operation | Null)
-//   GetUser    :: Value -> [Operation]
-//   GetInputs  :: Operation -> [Value]
-//   GetOutputs :: Operation -> [Value]
+// Blocks are unrelated to each other: nesting is expressed ONLY by a BlockOp
+// inside one block referencing another block (a one-way reference, like an
+// operand edge). A block never records who references it. The root block is
+// simply the one no BlockOp references.
 //
-// So Value/Operation (value.h) carry no edges. Graph owns the IR: an arena
-// (Context) holds the real nodes, and Graph keeps the edges in side tables; the
-// Get* methods read those tables. Nodes refer to each other by non-owning
-// `const T*` -- consistent with the VM assumptions (immutable, immortal, freely
-// shared): the arena outlives all nodes, so raw pointers never dangle and there
-// are no ownership cycles.
-//
-// Edges are stored REDUNDANTLY (forward: op->inputs/outputs; reverse:
-// value->def/users), like MLIR's operand lists + use lists. Redundancy is safe
-// because there is a SINGLE atomic write path: building goes through
-// MakeOperation, and mutation (graph transforms) goes through SetInput /
-// ReplaceAllUses, each of which updates both directions together. Everything
-// returned to callers is const, so the two directions cannot drift from
-// outside. As a belt-and-suspenders measure, CheckConsistency() verifies
-// forward and reverse agree.
-//
-// GetDef returns `const Operation*`; nullptr is the ADT's Null, meaning "this
-// value is an input at its level" (it has no defining operation).
-//
-// Blocks: every operation belongs to exactly one block, bound at creation
-// (MakeOperation takes the block). Edges remain global (option A) -- a Block
-// only groups membership and declares its interface. Nesting follows scheme
-// "jia": an inner block is built first, then referenced by a block-op
-// (BlockOpImpl) created in the outer block. Graph.main is the one root block,
-// owned by no block-op.
+// A value's def is an OpNode, or nullptr meaning "this value is a block
+// argument" (a level input -- the ADT's Null).
 
 #include <cstddef>
 #include <deque>
-#include <span>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "graph_config.h"
+#include "node.h"
 #include "value.h"
 
 namespace kvm::ir {
 
+class Block;
+
 // BlockOpImpl<OperationImpl> :: (block: Block)
-// The operation impl that carries a nested block. An operation whose op is a
-// block-op holds its child block here (scheme "jia"). This is the structural
-// member that makes nesting possible; if/for ops will reuse the same pattern.
+// The operation impl that carries a referenced block. An operation whose op is
+// a block-op holds the block it references here. This is the only link between
+// blocks; if/for ops will reuse the same pattern.
 struct BlockOpImpl {
   const Block* block = nullptr;
 };
@@ -61,154 +51,151 @@ KVM_MARK_MEMBER(::kvm::ir::OperationImpl, ::kvm::ir::BlockOpImpl);
 
 namespace kvm::ir {
 
-// Context: the arena tool a Graph uses to own node storage. It only holds the
-// real Value/Operation/Block objects (stable addresses via deque) and hands out
-// pointers. Edges and all graph semantics live on Graph, not here.
-class Context {
- public:
-  Context() = default;
-  Context(const Context&) = delete;
-  Context& operator=(const Context&) = delete;
+class Arena;
 
-  // Add a node to the arena. If its `name` is empty, a default label is filled
-  // in (v0, v1, ... / block0, block1, ...). A creator that supplies a name
-  // (parse, a naming pass) keeps it; the auto-name only kicks in for hand-built
-  // graphs that omit names. Operations have no name.
-  Value* AddValue(Value value) {
+// Block: one level of topology. Owns no storage (the arena does); it organizes
+// the nodes that belong to this level -- their program order, the block's
+// argument/output interface, and the edges among them. It is also the builder:
+// MakeOperation allocates via the arena and wires the result in one step.
+class Block {
+ public:
+  const std::string& name() const { return name_; }
+
+  // --- interface (the block's input/output value lists) ---
+
+  // arguments: this block's level inputs. Their def() is nullptr (Null).
+  const std::vector<ValueNode*>& arguments() const { return arguments_; }
+  // outputs: the values this block exposes (produced by ops inside it). This is
+  // an intrinsic property of the block's topology, symmetric to arguments --
+  // there is no separate `return` terminator op.
+  const std::vector<ValueNode*>& outputs() const { return outputs_; }
+
+  // operations: the ops belonging to this block, in program order.
+  const std::vector<OpNode*>& operations() const { return operations_; }
+
+  // --- building ---
+
+  // Add a block argument (a level input value). Returns its node (def==null).
+  ValueNode* AddArgument(Value value);
+
+  // Create an operation in this block: allocate the op node (arena) and wire it
+  // (operands, results, block membership, use lists) in one atomic step. The
+  // op is appended in program order. `results` are output payloads; each is
+  // allocated as a value node whose def is this op. Returns the op node.
+  OpNode* MakeOperation(Operation op, std::vector<ValueNode*> operands,
+                        std::vector<Value> results);
+
+  // Declare the block's exposed outputs.
+  void SetOutputs(std::vector<ValueNode*> outputs) {
+    outputs_ = std::move(outputs);
+  }
+
+  // --- transforms (the atomic write path for mutation) ---
+
+  // Repoint operand `index` of `op` to `new_value`, updating the operand edge
+  // and both values' use lists together.
+  void SetOperand(OpNode* op, std::size_t index, ValueNode* new_value);
+
+  // Replace every use of `old_value` with `new_value` across this block.
+  // Returns the number of uses rewritten.
+  std::size_t ReplaceAllUses(ValueNode* old_value, ValueNode* new_value);
+
+  // Remove `op` from the block: detach it from its operands' use lists and drop
+  // it from program order. Its result values become defless (callers must have
+  // already rerouted their uses, e.g. via ReplaceAllUses). No storage is freed
+  // (the arena outlives all nodes).
+  void EraseOp(OpNode* op);
+
+  // Constructed only via Arena::NewBlock (public because the arena's deque does
+  // the construction, not a friend). Do not call directly.
+  Block(Arena* arena, std::string name)
+      : arena_(arena), name_(std::move(name)) {}
+
+ private:
+  // Record / drop `op` as a user of `value` at operand slot `index`.
+  static void AddUse(ValueNode* value, OpNode* op, std::size_t index);
+  static void RemoveUse(ValueNode* value, OpNode* op, std::size_t index);
+
+  Arena* arena_;
+  std::string name_;
+  std::vector<ValueNode*> arguments_;
+  std::vector<ValueNode*> outputs_;
+  std::vector<OpNode*> operations_;
+};
+
+// Arena: the one owner of node storage for a whole graph. It only allocates and
+// holds the real ValueNode / OpNode / Block objects (stable addresses via
+// deque) and hands out pointers. It knows nothing about topology -- edges are
+// Block's job. Every block in the graph shares this one arena. (Defined after
+// Block so its deque<Block> sees the complete type.)
+class Arena {
+ public:
+  Arena() = default;
+  Arena(const Arena&) = delete;
+  Arena& operator=(const Arena&) = delete;
+
+  // Allocate a value node holding `value`. If its name is empty, a default
+  // label (v0, v1, ...) is filled in. Returns a free node (no edges yet).
+  ValueNode* NewValue(Value value) {
     if (value.name.empty()) value.name = "v" + std::to_string(value_id_++);
-    values_.push_back(std::move(value));
+    values_.emplace_back();
+    values_.back().value_ = std::move(value);
     return &values_.back();
   }
-  Operation* AddOperation(Operation op) {
-    operations_.push_back(std::move(op));
-    return &operations_.back();
+
+  // Allocate an operation node holding `op`. Returns a free node (no edges).
+  OpNode* NewOp(Operation op) {
+    ops_.emplace_back();
+    ops_.back().op_ = std::move(op);
+    return &ops_.back();
   }
-  Block* AddBlock(Block block) {
-    if (block.name.empty()) block.name = "block" + std::to_string(block_id_++);
-    blocks_.push_back(std::move(block));
+
+  // Allocate a block bound to this arena. If its name is empty, a default label
+  // (block0, block1, ...) is filled in. Returns an empty block (no ops/args).
+  Block* NewBlock(std::string name) {
+    if (name.empty()) name = "block" + std::to_string(block_id_++);
+    blocks_.emplace_back(this, std::move(name));
     return &blocks_.back();
   }
 
  private:
-  // deque keeps element addresses stable as the arena grows, so the pointers
-  // handed out (and the edges referring to them) remain valid.
-  std::deque<Value> values_;
-  std::deque<Operation> operations_;
+  std::deque<ValueNode> values_;
+  std::deque<OpNode> ops_;
   std::deque<Block> blocks_;
-
-  // Monotonic counters for default names (per kind, so v0.. and block0.. are
-  // each contiguous). No uniqueness check against creator-supplied names.
   std::size_t value_id_ = 0;
   std::size_t block_id_ = 0;
 };
 
-// Graph: the IR object passes work with. It owns an arena (Context) and the
-// global edge tables, and provides building / query / transform on top.
-//
-// ADT: Graph :: (main: Block, config). `main` is the one root block, owned by
-// no block-op.
-//
-// Mutability: building uses mutable Block* handles internally; everything
-// returned to callers (GetDef/GetUser/.../main) is const, so the only way to
-// change edges is the atomic write path here (MakeOperation / SetInput /
-// ReplaceAllUses).
+// Graph :: (root: Block, config). The aggregate the API passes around: it holds
+// the arena (owning all nodes) and the root block. Create the root once with
+// MakeRoot, then build through it; nested blocks come from arena().NewBlock.
 class Graph {
  public:
   Graph() = default;
   Graph(const Graph&) = delete;
   Graph& operator=(const Graph&) = delete;
 
-  // --- building ---
+  Arena& arena() { return arena_; }
 
-  // Create a free-standing value with no defining operation (GetDef ==
-  // nullptr). Use for level inputs (e.g. graph / block inputs).
-  const Value* MakeInput(std::string name, Type type,
-                         AnyOf<ValueImpl> impl = {});
+  // Create the root block (call once). Returns it; also reachable via root().
+  Block* MakeRoot(std::string name = "") {
+    root_ = arena_.NewBlock(std::move(name));
+    return root_;
+  }
 
-  // Create an empty block. `name` may be empty (auto-filled block0, block1...).
-  // Returns a mutable builder handle; operations are added by
-  // MakeOperation(block, ...) and outputs declared via SetBlockOutputs.
-  // (Scheme "jia": build an inner block fully, then wrap it in a block-op.)
-  Block* MakeBlock(std::vector<const Value*> inputs = {},
-                   std::string name = "");
+  // Designate an already-allocated arena block as the root (used when blocks
+  // are built bottom-up, e.g. the parser allocates then sets the outermost).
+  void SetRoot(Block* root) { root_ = root; }
 
-  // Create an operation INSIDE `block` -- binding to a block is part of
-  // creation, so no operation is ever free-floating. The op is appended to
-  // block->operations in program order. `outputs` gives the output values as
-  // plain data (name/type/impl -- a Value carries no edges); the arena copies
-  // each in and binds its def to this operation, then records all edges (each
-  // input gains this op as a user). Returns the operation; its created output
-  // values are retrieved via GetOutputs.
-  const Operation* MakeOperation(Block* block, Operator op,
-                                 AnyOf<OperationImpl> impl,
-                                 std::vector<const Value*> inputs,
-                                 std::vector<Value> outputs);
-
-  // Declare a block's exposed outputs (values produced by ops inside it).
-  void SetBlockOutputs(Block* block, std::vector<const Value*> outputs);
-
-  // Set the root block (ADT: Graph.main).
-  void SetMain(const Block* main) { main_ = main; }
+  Block* root() { return root_; }
+  const Block* root() const { return root_; }
 
   GraphConfig& config() { return config_; }
-
-  // --- graph information (the ADT functions); all return const ---
-
-  const Block* main() const { return main_; }
   const GraphConfig& config() const { return config_; }
 
-  // GetBlock :: Operation -> (Block | Null). The block an operation belongs to.
-  const Block* GetBlock(const Operation* op) const;
-
-  // GetDef :: Value -> (Operation | Null). nullptr == Null (a level input).
-  const Operation* GetDef(const Value* value) const;
-
-  // GetUser :: Value -> [Operation].
-  std::span<const Operation* const> GetUser(const Value* value) const;
-
-  // GetInputs :: Operation -> [Value].
-  std::span<const Value* const> GetInputs(const Operation* op) const;
-
-  // GetOutputs :: Operation -> [Value].
-  std::span<const Value* const> GetOutputs(const Operation* op) const;
-
-  // --- graph transforms (the single atomic write path for mutation) ---
-
-  // Repoint one input of `op` to `new_input`, updating both the forward edge
-  // (inputs_) and the reverse edge (users_) together. This is the only way to
-  // change a use, mirroring MLIR's OpOperand::set().
-  void SetInput(const Operation* op, std::size_t index, const Value* new_input);
-
-  // Replace every use of `old_value` with `new_value` across the whole graph
-  // (RAUW). Returns the number of uses rewritten.
-  std::size_t ReplaceAllUses(const Value* old_value, const Value* new_value);
-
-  // --- invariants ---
-
-  // Verify the redundant forward/reverse edges agree:
-  //   def_[v] == op            iff  v in outputs_[op]
-  //   op in users_[v]          iff  v in inputs_[op]
-  // Returns true if consistent; otherwise writes a description to `error` (if
-  // non-null) and returns false.
-  bool CheckConsistency(std::string* error = nullptr) const;
-
  private:
-  // Bind a value's def to an operation (records the def_ reverse edge). Used
-  // internally when an operation creates its outputs.
-  void Bind(const Value* value, const Operation* op);
-
-  Context arena_;
-
-  // Global edge tables (option A: Value/Operation stay pure data).
-  std::unordered_map<const Value*, const Operation*> def_;
-  std::unordered_map<const Value*, std::vector<const Operation*>> users_;
-  std::unordered_map<const Operation*, std::vector<const Value*>> inputs_;
-  std::unordered_map<const Operation*, std::vector<const Value*>> outputs_;
-
-  // Which block each operation belongs to (bound at creation).
-  std::unordered_map<const Operation*, const Block*> op_block_;
-
-  const Block* main_ = nullptr;
+  Arena arena_;
+  Block* root_ = nullptr;
   GraphConfig config_;
 };
 

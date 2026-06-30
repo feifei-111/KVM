@@ -2,7 +2,6 @@
 #include <string>
 
 #include "attr.h"
-#include "builtin.h"
 #include "graph.h"
 #include "serialization/builtin_codecs.h"
 #include "serialization/serializer.h"
@@ -25,11 +24,11 @@ serial::Registry MakeRegistry() {
 
 KVM_TEST(serialize_leaf_impl_and_operands) {
   Graph g;
-  Block* root = g.MakeBlock();
-  const Value* a = g.MakeInput("a", Tensor());
-  const Value* b = g.MakeInput("b", Tensor());
-  g.MakeOperation(root, Matmul(), {}, {a, b}, {Value{"c", Tensor(), {}}});
-  g.SetMain(root);
+  Block* root = g.MakeRoot();
+  ValueNode* a = root->AddArgument(Value{"a", Tensor(), {}});
+  ValueNode* b = root->AddArgument(Value{"b", Tensor(), {}});
+  root->MakeOperation(Operation{Matmul(), {}}, {a, b},
+                      {Value{"c", Tensor(), {}}});
 
   auto reg = MakeRegistry();
   std::string text = serial::Serialize(g, reg);
@@ -42,11 +41,10 @@ KVM_TEST(serialize_leaf_impl_and_operands) {
 
 KVM_TEST(serialize_const_impl_in_angle_brackets) {
   Graph g;
-  Block* root = g.MakeBlock();
+  Block* root = g.MakeRoot();
   Operator constOp{"const", "builtin", {}, {Type{"int", "builtin"}}};
-  g.MakeOperation(root, constOp, {}, {},
-                  {Value{"k", {"int", "builtin"}, ConstIntImpl{42}}});
-  g.SetMain(root);
+  root->MakeOperation(Operation{constOp, {}}, {},
+                      {Value{"k", {"int", "builtin"}, ConstIntImpl{42}}});
 
   auto reg = MakeRegistry();
   std::string text = serial::Serialize(g, reg);
@@ -55,10 +53,7 @@ KVM_TEST(serialize_const_impl_in_angle_brackets) {
 
 KVM_TEST(empty_impl_and_attr_are_omitted) {
   Graph g;
-  Block* root = g.MakeBlock();
-  const Value* a = g.MakeInput("a", Tensor());  // no impl, no attr
-  g.SetMain(root);
-  (void)a;
+  g.MakeRoot();  // empty root block, no args/ops
 
   auto reg = MakeRegistry();
   std::string text = serial::Serialize(g, reg);
@@ -70,9 +65,8 @@ KVM_TEST(empty_impl_and_attr_are_omitted) {
 
 KVM_TEST(attr_rendered_as_json_like) {
   Graph g;
-  const Value* a = g.MakeInput("a", Tensor());
-  Block* root = g.MakeBlock({a});  // a is a block input, so it gets printed
-  g.SetMain(root);
+  Block* root = g.MakeRoot();
+  ValueNode* a = root->AddArgument(Value{"a", Tensor(), {}});
 
   AttrMap attrs;
   attrs.Set(a, "rank", 3);
@@ -84,17 +78,16 @@ KVM_TEST(attr_rendered_as_json_like) {
 
 KVM_TEST(nested_block_op_renders_recursively) {
   Graph g;
-  const Value* ia = g.MakeInput("ia", Tensor());
-  Block* inner = g.MakeBlock({ia});
+  Block* inner = g.arena().NewBlock("inner");
+  ValueNode* ia = inner->AddArgument(Value{"ia", Tensor(), {}});
   Operator neg{"neg", "hlo", {Tensor()}, {Tensor()}};
-  const Operation* iop =
-      g.MakeOperation(inner, neg, {}, {ia}, {Value{"ib", Tensor(), {}}});
-  g.SetBlockOutputs(inner, {g.GetOutputs(iop)[0]});
+  OpNode* iop = inner->MakeOperation(Operation{neg, {}}, {ia},
+                                     {Value{"ib", Tensor(), {}}});
+  inner->SetOutputs({iop->results()[0]});
 
-  Block* root = g.MakeBlock();
+  Block* root = g.MakeRoot();
   Operator blockop{"block", "builtin", {}, {}};
-  g.MakeOperation(root, blockop, BlockOpImpl{inner}, {}, {});
-  g.SetMain(root);
+  root->MakeOperation(Operation{blockop, BlockOpImpl{inner}}, {}, {});
 
   auto reg = MakeRegistry();
   std::string text = serial::Serialize(g, reg);

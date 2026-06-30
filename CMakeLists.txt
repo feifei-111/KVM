@@ -27,10 +27,15 @@ add_library(kvm_obj OBJECT
   src/ir/dialect/tile/ops.cpp
   src/ir/dialect/tile/verify.cpp
   src/ir/dialect/tile/dialect.cpp
+  src/device/device.cpp
+  src/transform/kernel_to_task/kernel_to_task.cpp
 )
-# Headers are included relative to the ir root, e.g. "graph.h",
-# "dialect/kernel/values.h", "serialization/registry.h".
+# IR headers are included relative to the ir root, e.g. "graph.h",
+# "dialect/kernel/values.h", "serialization/registry.h". device/ and transform/
+# sit beside ir/ and include each other / the IR as "device/...",
+# "transform/...", so src/ is also a root.
 target_include_directories(kvm_obj PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/src/ir
 )
 

@@ -29,12 +29,14 @@
 #include <unordered_map>
 #include <variant>
 
-#include "value.h"
+#include "node.h"
 
 namespace kvm::ir {
 
-// Host :: Value | Operation | Block  (referred to by non-owning pointer).
-using AttrHost = std::variant<const Value*, const Operation*, const Block*>;
+// Host :: ValueNode | OpNode | Block  (referred to by non-owning pointer). The
+// host is the topology NODE, the stable identity passes refer to; attrs are
+// unrelated to the node's payload content -- the node is only a key.
+using AttrHost = std::variant<const ValueNode*, const OpNode*, const Block*>;
 
 // Attr :: String -> Any  (one host's attribute bag).
 using Attr = std::unordered_map<std::string, std::any>;
