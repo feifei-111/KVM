@@ -51,7 +51,7 @@ class Serializer {
   std::string Run() {
     out_ = "graph {\n";
     RenderConfig();
-    if (g_.main()) RenderBlock(g_.main(), 1);
+    if (g_.root()) RenderBlock(g_.root(), 1);
     out_ += "}\n";
     return out_;
   }
@@ -115,31 +115,34 @@ class Serializer {
   }
 
   // `%name: type<impl> {attr}` for a value definition.
-  std::string RenderValueDef(const Value* v) {
-    std::string s = "%" + v->name + ": " + RenderType(v->type);
-    if (v->impl.has_value()) {
-      auto inner = reg_.SerializeValueImpl(KeyOf(v->type), v->impl);
+  std::string RenderValueDef(const ValueNode* vn) {
+    const Value& v = vn->value();
+    std::string s = "%" + v.name + ": " + RenderType(v.type);
+    if (v.impl.has_value()) {
+      auto inner = reg_.SerializeValueImpl(KeyOf(v.type), v.impl);
       if (inner && !inner->empty()) s += "<" + *inner + ">";
     }
-    s += RenderAttrs(v);
+    s += RenderAttrs(vn);
     return s;
   }
 
   void RenderBlock(const Block* b, int depth) {
     Indent(depth);
-    out_ += "^" + b->name + "(";
-    for (std::size_t i = 0; i < b->inputs.size(); ++i) {
+    out_ += "^" + b->name() + "(";
+    const auto& args = b->arguments();
+    for (std::size_t i = 0; i < args.size(); ++i) {
       if (i) out_ += ", ";
-      out_ += RenderValueDef(b->inputs[i]);
+      out_ += RenderValueDef(args[i]);
     }
     out_ += ") {\n";
-    for (const Operation* op : b->operations) RenderOperation(op, depth + 1);
-    if (!b->outputs.empty()) {
+    for (const OpNode* op : b->operations()) RenderOperation(op, depth + 1);
+    const auto& outs = b->outputs();
+    if (!outs.empty()) {
       Indent(depth + 1);
       out_ += "return";
-      for (std::size_t i = 0; i < b->outputs.size(); ++i) {
+      for (std::size_t i = 0; i < outs.size(); ++i) {
         out_ += i ? ", " : " ";
-        out_ += "%" + b->outputs[i]->name;
+        out_ += "%" + outs[i]->value().name;
       }
       out_ += "\n";
     }
@@ -147,9 +150,9 @@ class Serializer {
     out_ += "}\n";
   }
 
-  void RenderOperation(const Operation* op, int depth) {
+  void RenderOperation(const OpNode* op, int depth) {
     Indent(depth);
-    auto outs = g_.GetOutputs(op);
+    const auto& outs = op->results();
     if (!outs.empty()) {
       for (std::size_t i = 0; i < outs.size(); ++i) {
         if (i) out_ += ", ";
@@ -157,23 +160,24 @@ class Serializer {
       }
       out_ += " = ";
     }
-    out_ += KeyOf(op->op);
+    out_ += KeyOf(op->op().op);
     RenderOpImpl(op, depth);
     out_ += RenderAttrs(op);
     // operands
     out_ += "(";
-    auto ins = g_.GetInputs(op);
+    const auto& ins = op->operands();
     for (std::size_t i = 0; i < ins.size(); ++i) {
       if (i) out_ += ", ";
-      out_ += "%" + ins[i]->name;
+      out_ += "%" + ins[i]->value().name;
     }
     out_ += ")\n";
   }
 
   // `<impl>`: leaf impls via registry; BlockOpImpl recurses into its block.
-  void RenderOpImpl(const Operation* op, int depth) {
-    if (!op->impl.has_value()) return;
-    if (const BlockOpImpl* bo = op->impl.as<BlockOpImpl>()) {
+  void RenderOpImpl(const OpNode* op, int depth) {
+    const Operation& payload = op->op();
+    if (!payload.impl.has_value()) return;
+    if (const BlockOpImpl* bo = payload.impl.as<BlockOpImpl>()) {
       // nested block as the op's impl
       out_ += "<\n";
       if (bo->block) RenderBlock(bo->block, depth + 1);
@@ -181,7 +185,7 @@ class Serializer {
       out_ += ">";
       return;
     }
-    auto inner = reg_.SerializeOperationImpl(KeyOf(op->op), op->impl);
+    auto inner = reg_.SerializeOperationImpl(KeyOf(payload.op), payload.impl);
     if (inner && !inner->empty()) out_ += "<" + *inner + ">";
   }
 

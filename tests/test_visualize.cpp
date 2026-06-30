@@ -3,7 +3,6 @@
 #include <string>
 
 #include "attr.h"
-#include "builtin.h"
 #include "graph.h"
 #include "test_harness.h"
 #include "visualization/visualizer.h"
@@ -19,13 +18,12 @@ bool HasDot() { return std::system("command -v dot >/dev/null 2>&1") == 0; }
 
 KVM_TEST(dot_has_value_and_op_nodes_and_edges) {
   Graph g;
-  const Value* a = g.MakeInput("a", T());
-  const Value* b = g.MakeInput("b", T());
-  Block* root = g.MakeBlock({a, b});
-  const Operation* op =
-      g.MakeOperation(root, Add(), {}, {a, b}, {Value{"c", T(), {}}});
-  g.SetBlockOutputs(root, {g.GetOutputs(op)[0]});
-  g.SetMain(root);
+  Block* root = g.MakeRoot();
+  ValueNode* a = root->AddArgument(Value{"a", T(), {}});
+  ValueNode* b = root->AddArgument(Value{"b", T(), {}});
+  OpNode* op =
+      root->MakeOperation(Operation{Add(), {}}, {a, b}, {Value{"c", T(), {}}});
+  root->SetOutputs({op->results()[0]});
 
   std::string dot = viz::RenderDot(g);
   KVM_CHECK(dot.find("digraph ir") != std::string::npos);
@@ -43,12 +41,11 @@ KVM_TEST(html_embeds_svg_and_details_when_dot_available) {
     return;
   }
   Graph g;
-  const Value* a = g.MakeInput("a", T());
-  Block* root = g.MakeBlock({a});
-  const Operation* op =
-      g.MakeOperation(root, Add(), {}, {a, a}, {Value{"c", T(), {}}});
-  g.SetBlockOutputs(root, {g.GetOutputs(op)[0]});
-  g.SetMain(root);
+  Block* root = g.MakeRoot();
+  ValueNode* a = root->AddArgument(Value{"a", T(), {}});
+  OpNode* op =
+      root->MakeOperation(Operation{Add(), {}}, {a, a}, {Value{"c", T(), {}}});
+  root->SetOutputs({op->results()[0]});
 
   AttrMap attrs;
   attrs.Set(a, "rank", 3);

@@ -1,6 +1,8 @@
 // Round-trip tests: serialize -> parse -> serialize must be stable.
+#include <cstdint>
 #include <string>
 
+#include "attr.h"
 #include "builtin.h"
 #include "graph.h"
 #include "serialization/builtin_codecs.h"
@@ -31,13 +33,12 @@ serial::Registry MakeRegistry() {
 
 KVM_TEST(round_trip_simple_graph) {
   Graph g;
-  const Value* a = g.MakeInput("a", Tensor());
-  const Value* b = g.MakeInput("b", Tensor());
-  Block* root = g.MakeBlock({a, b}, "entry");
-  const Operation* op =
-      g.MakeOperation(root, Matmul(), {}, {a, b}, {Value{"c", Tensor(), {}}});
-  g.SetBlockOutputs(root, {g.GetOutputs(op)[0]});
-  g.SetMain(root);
+  Block* root = g.MakeRoot("entry");
+  ValueNode* a = root->AddArgument(Value{"a", Tensor(), {}});
+  ValueNode* b = root->AddArgument(Value{"b", Tensor(), {}});
+  OpNode* op = root->MakeOperation(Operation{Matmul(), {}}, {a, b},
+                                   {Value{"c", Tensor(), {}}});
+  root->SetOutputs({op->results()[0]});
   g.config().dist.all_ranks = {0, 1, 2, 3};
 
   auto reg = MakeRegistry();
@@ -52,10 +53,9 @@ KVM_TEST(round_trip_simple_graph) {
 
 KVM_TEST(round_trip_preserves_const_impl) {
   Graph g;
-  Block* root = g.MakeBlock({}, "entry");
-  g.MakeOperation(root, ConstOp(), {}, {},
-                  {Value{"k", {"int", "builtin"}, ConstIntImpl{42}}});
-  g.SetMain(root);
+  Block* root = g.MakeRoot("entry");
+  root->MakeOperation(Operation{ConstOp(), {}}, {},
+                      {Value{"k", {"int", "builtin"}, ConstIntImpl{42}}});
 
   auto reg = MakeRegistry();
   std::string text1 = serial::Serialize(g, reg);
@@ -64,19 +64,18 @@ KVM_TEST(round_trip_preserves_const_impl) {
   serial::Parse(text1, reg, g2);
 
   // the parsed value carries a ConstIntImpl{42} again
-  const Block* m = g2.main();
-  const Operation* op = m->operations[0];
-  const Value* k = g2.GetOutputs(op)[0];
-  const ConstIntImpl* ci = k->impl.as<ConstIntImpl>();
+  const Block* m = g2.root();
+  const OpNode* op = m->operations()[0];
+  const Value& k = op->results()[0]->value();
+  const ConstIntImpl* ci = k.impl.as<ConstIntImpl>();
   KVM_CHECK(ci != nullptr && ci->value == 42);
   KVM_CHECK(serial::Serialize(g2, reg) == text1);
 }
 
 KVM_TEST(round_trip_attrs) {
   Graph g;
-  const Value* a = g.MakeInput("a", Tensor());
-  Block* root = g.MakeBlock({a}, "entry");
-  g.SetMain(root);
+  Block* root = g.MakeRoot("entry");
+  ValueNode* a = root->AddArgument(Value{"a", Tensor(), {}});
 
   AttrMap attrs;
   attrs.Set(a, "rank", std::int64_t{3});
@@ -94,17 +93,16 @@ KVM_TEST(round_trip_attrs) {
 
 KVM_TEST(round_trip_nested_block_op) {
   Graph g;
-  const Value* ia = g.MakeInput("ia", Tensor());
-  Block* inner = g.MakeBlock({ia}, "inner");
+  Block* inner = g.arena().NewBlock("inner");
+  ValueNode* ia = inner->AddArgument(Value{"ia", Tensor(), {}});
   Operator neg{"neg", "hlo", {Tensor()}, {Tensor()}};
-  const Operation* iop =
-      g.MakeOperation(inner, neg, {}, {ia}, {Value{"ib", Tensor(), {}}});
-  g.SetBlockOutputs(inner, {g.GetOutputs(iop)[0]});
+  OpNode* iop = inner->MakeOperation(Operation{neg, {}}, {ia},
+                                     {Value{"ib", Tensor(), {}}});
+  inner->SetOutputs({iop->results()[0]});
 
-  Block* root = g.MakeBlock({}, "entry");
+  Block* root = g.MakeRoot("entry");
   Operator blockop{"block", "builtin", {}, {}};
-  g.MakeOperation(root, blockop, BlockOpImpl{inner}, {}, {});
-  g.SetMain(root);
+  root->MakeOperation(Operation{blockop, BlockOpImpl{inner}}, {}, {});
 
   auto reg = MakeRegistry();
   reg.RegisterOperator("hlo.neg", neg);

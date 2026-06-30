@@ -56,22 +56,23 @@ KVM_TEST(graph_round_trip_with_task_ops) {
   auto reg = MakeRegistry();
 
   Graph g;
-  const Value* x = g.MakeInput("x", T(), F16({8, 128}, Location::kShared));
-  const Value* w = g.MakeInput("w", T(), F16({128, 128}, Location::kShared));
-  Block* root = g.MakeBlock({x, w}, "entry");
+  Block* root = g.MakeRoot("entry");
+  ValueNode* x =
+      root->AddArgument(Value{"x", T(), F16({8, 128}, Location::kShared)});
+  ValueNode* w =
+      root->AddArgument(Value{"w", T(), F16({128, 128}, Location::kShared)});
 
   // mma into a register accumulator
   Operator mma = *reg.GetOperator("task.tc.mma");
-  const Operation* mm =
-      g.MakeOperation(root, mma, {}, {x, w},
-                      {Value{"y", T(), F16({8, 128}, Location::kRegister)}});
-  const Value* y = g.GetOutputs(mm)[0];
+  OpNode* mm = root->MakeOperation(
+      Operation{mma, {}}, {x, w},
+      {Value{"y", T(), F16({8, 128}, Location::kRegister)}});
+  ValueNode* y = mm->results()[0];
 
   // a reduce carrying its axis on the OperationImpl
   Operator rsum = *reg.GetOperator("task.warp.reduce.sum");
-  g.MakeOperation(root, rsum, ReduceOp{1}, {y},
-                  {Value{"s", T(), F16({8, 1}, Location::kRegister)}});
-  g.SetMain(root);
+  root->MakeOperation(Operation{rsum, ReduceOp{1}}, {y},
+                      {Value{"s", T(), F16({8, 1}, Location::kRegister)}});
 
   std::string text1 = serial::Serialize(g, reg);
   Graph g2;
@@ -80,9 +81,9 @@ KVM_TEST(graph_round_trip_with_task_ops) {
   KVM_CHECK(text1 == text2);
 
   // the reduce op's impl carries its axis through the round trip
-  const Block* m = g2.main();
-  const Operation* last = m->operations.back();
-  const ReduceOp* impl = last->impl.as<ReduceOp>();
+  const Block* m = g2.root();
+  const OpNode* last = m->operations().back();
+  const ReduceOp* impl = last->op().impl.as<ReduceOp>();
   KVM_CHECK(impl != nullptr && impl->axis == 1);
 }
 

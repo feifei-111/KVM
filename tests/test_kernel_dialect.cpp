@@ -53,19 +53,18 @@ KVM_TEST(graph_round_trip_with_dialect_ops) {
   auto reg = MakeRegistry();
 
   Graph g;
-  const Value* x = g.MakeInput("x", T(), F16({8, 4096}));
-  const Value* w = g.MakeInput("w", T(), F16({4096, 4096}));
-  Block* root = g.MakeBlock({x, w}, "entry");
+  Block* root = g.MakeRoot("entry");
+  ValueNode* x = root->AddArgument(Value{"x", T(), F16({8, 4096})});
+  ValueNode* w = root->AddArgument(Value{"w", T(), F16({4096, 4096})});
 
   Operator matmul = *reg.GetOperator("kernel.matmul");
-  const Operation* mm = g.MakeOperation(root, matmul, {}, {x, w},
-                                        {Value{"y", T(), F16({8, 4096})}});
-  const Value* y = g.GetOutputs(mm)[0];
+  OpNode* mm = root->MakeOperation(Operation{matmul, {}}, {x, w},
+                                   {Value{"y", T(), F16({8, 4096})}});
+  ValueNode* y = mm->results()[0];
 
   Operator a2a = *reg.GetOperator("kernel.comm.all_to_all");
-  g.MakeOperation(root, a2a, AllToAllOp{{0, 1, 2, 3}}, {y},
-                  {Value{"z", T(), F16({8, 4096})}});
-  g.SetMain(root);
+  root->MakeOperation(Operation{a2a, AllToAllOp{{0, 1, 2, 3}}}, {y},
+                      {Value{"z", T(), F16({8, 4096})}});
 
   std::string text1 = serial::Serialize(g, reg);
   Graph g2;
@@ -74,9 +73,9 @@ KVM_TEST(graph_round_trip_with_dialect_ops) {
   KVM_CHECK(text1 == text2);
 
   // the all_to_all op's impl carries its ranks through the round trip
-  const Block* m = g2.main();
-  const Operation* last = m->operations.back();
-  const AllToAllOp* impl = last->impl.as<AllToAllOp>();
+  const Block* m = g2.root();
+  const OpNode* last = m->operations().back();
+  const AllToAllOp* impl = last->op().impl.as<AllToAllOp>();
   KVM_CHECK(impl != nullptr && impl->ranks.size() == 4 && impl->ranks[3] == 3);
 }
 

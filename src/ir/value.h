@@ -1,6 +1,6 @@
 #pragma once
 
-// Core value & operation types of the KVM IR.
+// Core value & operation PAYLOAD types of the KVM IR.
 //
 // This mirrors the ADT spec (docs / Notion "ir"):
 //
@@ -10,6 +10,12 @@
 //   Operator  :: (name, dialect, inputs, outputs)
 //   OperationImpl :: Any<"OperationImpl">  -- open, tagless mark
 //   Operation :: (op, impl)
+//
+// These structs are PURE DATA: they carry no graph edges and no pointers. The
+// topology (def / uses / operands / results / block membership) lives on the
+// node layer (node.h) that WRAPS these payloads, and is managed by Block
+// (graph.h). Keeping payload free of edges is what lets the ADT read like the
+// ADT: a Value is just (name, type, impl), nothing more.
 //
 // The open "mark" (Any<...>) is an OPEN but BOUNDED sum: any dialect may add a
 // member without the core knowing it (open), yet only types explicitly marked
@@ -28,9 +34,6 @@
 //
 // Register a member with KVM_MARK_MEMBER(ValueImpl, T) /
 // KVM_MARK_MEMBER(OperationImpl, T) (see the builtin impls for examples).
-//
-// Graph edges (def / users / inputs / outputs) are NOT fields here; they are
-// functions, defined in graph.h. These structs only hold intrinsic data.
 
 #include <string>
 #include <vector>
@@ -49,7 +52,7 @@ struct Type {
 // AnyOf<ValueImpl>, matching the ADT's Any<"ValueImpl">.
 struct ValueImpl {};
 
-// Value :: (name, type, impl)
+// Value :: (name, type, impl) -- pure payload (no edges; see node.h).
 struct Value {
   std::string name;
   Type type;
@@ -70,30 +73,12 @@ struct Operator {
 // AnyOf<OperationImpl>, matching the ADT's Any<"OperationImpl">.
 struct OperationImpl {};
 
-// Operation :: (op, impl)
+// Operation :: (op, impl) -- pure payload (no edges; see node.h).
 // A concrete instance. `op` is the key (which kind); `impl` is the extra data
 // for that kind (e.g. BlockOpImpl holds a Block).
 struct Operation {
   Operator op;
   AnyOf<OperationImpl> impl;
-};
-
-// Block :: (operations, inputs, outputs)
-// A block is a sequence of operations plus its interface. Edges live globally
-// in the Context (option A); a Block just groups membership and declares its
-// interface:
-//   - operations: the ops belonging to this block, in program order. Every
-//     operation belongs to exactly one block (bound at creation).
-//   - inputs:  level inputs of this block; their GetDef == nullptr (Null).
-//   - outputs: values produced inside the block that it exposes.
-//   - name:    a label to tell block instances apart (like Value.name); given
-//     by the creator, or auto-filled (block0, block1, ...) when left empty.
-// Nodes are referred to by non-owning pointers into the Context arena.
-struct Block {
-  std::string name;
-  std::vector<const Operation*> operations;
-  std::vector<const Value*> inputs;
-  std::vector<const Value*> outputs;
 };
 
 }  // namespace kvm::ir

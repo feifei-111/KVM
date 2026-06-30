@@ -170,8 +170,8 @@ class Parser {
     CHECK(cur_.AcceptWord("graph")) << "parse: expected 'graph'";
     cur_.Expect('{');
     if (PeekWord("config")) ParseConfig();
-    Block* main = ParseBlock();
-    g_.SetMain(main);
+    Block* root = ParseBlock();
+    g_.SetRoot(root);
     cur_.Expect('}');
     return std::move(attrs_);
   }
@@ -265,7 +265,7 @@ class Parser {
     return spec;
   }
 
-  const Value* ResolveRef() {
+  ValueNode* ResolveRef() {
     cur_.Expect('%');
     std::string name = cur_.Ident();
     auto it = symbols_.find(name);
@@ -282,25 +282,23 @@ class Parser {
   Block* ParseBlock() {
     cur_.Expect('^');
     std::string block_name = cur_.Ident();
+    Block* block = g_.arena().NewBlock(block_name);
 
-    // header inputs: created now so operands inside can reference them.
-    std::vector<const Value*> inputs;
+    // header arguments: created now so operands inside can reference them.
     cur_.Expect('(');
     if (!cur_.Accept(')')) {
       do {
         ValueSpec s = ParseValueSpec();
-        const Value* v = g_.MakeInput(s.name, s.type, std::move(s.impl));
+        ValueNode* v =
+            block->AddArgument(Value{s.name, s.type, std::move(s.impl)});
         symbols_[s.name] = v;
         AttachAttrs(v, s.attrs);
-        inputs.push_back(v);
       } while (cur_.Accept(','));
       cur_.Expect(')');
     }
 
-    Block* block = g_.MakeBlock(std::move(inputs), block_name);
-
     cur_.Expect('{');
-    std::vector<const Value*> outputs;
+    std::vector<ValueNode*> outputs;
     while (!cur_.PeekChar('}')) {
       if (PeekWord("return")) {
         cur_.AcceptWord("return");
@@ -311,7 +309,7 @@ class Parser {
       }
       ParseOperation(block);
     }
-    if (!outputs.empty()) g_.SetBlockOutputs(block, std::move(outputs));
+    if (!outputs.empty()) block->SetOutputs(std::move(outputs));
     cur_.Expect('}');
     return block;
   }
@@ -348,7 +346,7 @@ class Parser {
 
     AttrPairs op_attrs = ParseAttrs();
 
-    std::vector<const Value*> operands;
+    std::vector<ValueNode*> operands;
     cur_.Expect('(');
     if (!cur_.Accept(')')) {
       do {
@@ -363,12 +361,12 @@ class Parser {
       outs.push_back(Value{s.name, s.type, std::move(s.impl)});
     }
 
-    const Operation* operation =
-        g_.MakeOperation(block, std::move(op), std::move(impl),
-                         std::move(operands), std::move(outs));
+    OpNode* operation =
+        block->MakeOperation(Operation{std::move(op), std::move(impl)},
+                             std::move(operands), std::move(outs));
     AttachAttrs(operation, op_attrs);
 
-    auto created = g_.GetOutputs(operation);
+    const auto& created = operation->results();
     for (std::size_t i = 0; i < created.size(); ++i) {
       symbols_[out_specs[i].name] = created[i];
       AttachAttrs(created[i], out_specs[i].attrs);
@@ -379,7 +377,7 @@ class Parser {
   const Registry& reg_;
   Graph& g_;
   AttrMap attrs_;
-  std::unordered_map<std::string, const Value*> symbols_;
+  std::unordered_map<std::string, ValueNode*> symbols_;
 };
 
 }  // namespace
